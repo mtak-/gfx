@@ -285,7 +285,7 @@ impl hal::Surface<Backend> for Surface {
             format::Format::Rgba16Float,
         ];
 
-        let device_caps = &device.private_caps;
+        let device_caps = &device.shared.private_caps;
         let can_set_display_sync = device_caps.os_is_mac && device_caps.has_version_at_least(10, 13);
 
         let present_modes = if can_set_display_sync {
@@ -318,7 +318,7 @@ impl Device {
             sc.clear_drawables();
         }
 
-        let caps = &self.private_caps;
+        let caps = &self.shared.private_caps;
         let mtl_format = caps
             .map_format(config.format)
             .expect("unsupported backbuffer format");
@@ -373,7 +373,7 @@ impl Device {
                                 cmd_buffer,
                                 &old.frames[0].texture,
                                 texture,
-                                self.private_caps.layered_rendering,
+                                &self.shared.private_caps,
                             );
                             cmd_buffer.present_drawable(drawable);
                             cmd_buffer.set_label("build_swapchain");
