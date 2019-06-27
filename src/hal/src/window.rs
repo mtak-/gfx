@@ -193,6 +193,50 @@ pub trait Surface<B: Backend>: fmt::Debug + Any + Send + Sync {
         &self,
         physical_device: &B::PhysicalDevice,
     ) -> (SurfaceCapabilities, Option<Vec<Format>>, Vec<PresentMode>);
+
+    /// Set up the swapchain associated with the surface to have the given format.
+    unsafe fn configure_swapchain(
+        &self, device: &B::Device, config: SurfaceSwapchainConfig
+    ) -> Result<(), CreationError>;
+
+    /// An opaque type wrapping the swapchain image.
+    type SwapchainImage: Borrow<B::ImageView> + fmt::Debug + Send + Sync;
+
+    /// Acquire a new swapchain image for rendering.
+    ///
+    /// May fail according to one of the reasons indicated in `AcquireError` enum.
+    ///
+    /// # Synchronization
+    ///
+    /// The acquired image is available to render. No synchronization is required.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    ///
+    /// ```
+    unsafe fn acquire_image(
+        &mut self,
+        timeout_ns: u64,
+    ) -> Result<(Self::SwapchainImage, SwapchainImageId, Option<Suboptimal>), AcquireError>;
+
+    /// Present the acquired image.
+    ///
+    /// # Safety
+    ///
+    /// The passed queue _must_ support presentation on the surface, which is
+    /// used for creating this swapchain.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    ///
+    /// ```
+    unsafe fn present<C: Capability>(
+        &self,
+        present_queue: &mut CommandQueue<B, C>,
+        image: Self::SwapchainImage,
+    ) -> Result<Option<Suboptimal>, PresentError>;
 }
 
 /// Index of an image in the swapchain.
@@ -478,3 +522,90 @@ pub trait Swapchain<B: Backend>: fmt::Debug + Any + Send + Sync {
         self.present::<_, B::Semaphore, _>(present_queue, image_index, iter::empty())
     }
 }
+
+
+/// Contains all the data necessary to create a new `AltSwapchain`
+///
+/// # Examples
+///
+/// This type implements the builder pattern, method calls can be
+/// easily chained.
+///
+/// ```no_run
+/// # extern crate gfx_hal;
+/// # fn main() {
+/// # use gfx_hal::{SurfaceSwapchainConfig};
+/// # use gfx_hal::format::Format;
+/// let config = SurfaceSwapchainConfig::new(Format::Bgra8Unorm, 2);
+/// # }
+/// ```
+#[derive(Debug, Clone)]
+pub struct SurfaceSwapchainConfig {
+    /// Presentation mode.
+    pub present_mode: PresentMode,
+    /// Alpha composition mode.
+    pub composite_alpha: CompositeAlpha,
+    /// Format of the backbuffer images.
+    pub format: Format,
+    /// Number of images in the swapchain. Must be in
+    /// `SurfaceCapabilities::image_count` range.
+    pub image_count: SwapImageIndex,
+}
+
+impl SurfaceSwapchainConfig {
+    /// Create a new default configuration (color images only).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    ///
+    /// ```
+    pub fn new(format: Format, image_count: SwapImageIndex) -> Self {
+        SurfaceSwapchainConfig {
+            present_mode: PresentMode::Fifo,
+            composite_alpha: CompositeAlpha::OPAQUE,
+            format,
+            image_count,
+        }
+    }
+
+    /// Create a swapchain configuration based on the capabilities
+    /// returned from a physical device query. If the surface does not
+    /// specify a current size, default_extent is clamped and used instead.
+    pub fn from_caps(caps: &SurfaceCapabilities, format: Format) -> Self {
+        let composite_alpha = if caps.composite_alpha.contains(CompositeAlpha::INHERIT) {
+            CompositeAlpha::INHERIT
+        } else if caps.composite_alpha.contains(CompositeAlpha::OPAQUE) {
+            CompositeAlpha::OPAQUE
+        } else {
+            unreachable!("neither INHERIT or OPAQUE CompositeAlpha modes are supported")
+        };
+
+        SurfaceSwapchainConfig {
+            present_mode: PresentMode::Fifo,
+            composite_alpha,
+            format,
+            image_count: caps.image_count.start,
+        }
+    }
+
+    /// Specify the presentation mode.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    ///
+    /// ```
+    pub fn with_mode(mut self, mode: PresentMode) -> Self {
+        self.present_mode = mode;
+        self
+    }
+}
+
+/// A unique ID associated with an image belonging to `AltSwapchain`. In normal operation,
+/// it would cycle through N consecutive numbers (e.g. 1-2-3-1-2-3-...). Occasionally,
+/// it may also increase to accomodate for the native backend behavior on surface resize,
+/// hide/show, fullscreen transition, etc.
+/// The client of `AltSwapchain` is expected to keep resources associated with some of the
+/// recently used `SwapchainImageId` values, most often `B::Framebuffer` objects.
+pub type SwapchainImageId = u64;

@@ -902,6 +902,29 @@ impl hal::Surface<Backend> for Surface {
     fn supports_queue_family(&self, _: &QueueFamily) -> bool {
         unimplemented!()
     }
+
+    unsafe fn configure_swapchain(
+        &self, _: &Device, _: hal::SurfaceSwapchainConfig
+    ) -> Result<(), hal::window::CreationError> {
+        unimplemented!()
+    }
+
+    type SwapchainImage = ();
+
+    unsafe fn acquire_image(
+        &mut self,
+        _: u64,
+    ) -> Result<((), hal::SwapchainImageId, Option<hal::window::Suboptimal>), hal::AcquireError> {
+        unimplemented!()
+    }
+
+    unsafe fn present<'a, C>(
+        &'a self,
+        _: &mut hal::CommandQueue<Backend, C>,
+        _: (),
+    ) -> Result<Option<hal::window::Suboptimal>, hal::window::PresentError> {
+        unimplemented!()
+    }
 }
 
 /// Dummy swapchain.
