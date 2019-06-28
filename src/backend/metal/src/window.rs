@@ -9,9 +9,11 @@ use crate::{
 use hal::{
     format,
     image,
-    window::{Extent2D, Suboptimal},
-    CompositeAlpha,
     SwapchainConfig,
+    SurfaceSwapchainConfig,
+    CompositeAlpha,
+    PresentMode,
+    window::{Extent2D, Suboptimal},
 };
 
 use core_graphics::base::CGFloat;
@@ -311,7 +313,7 @@ impl hal::Surface<Backend> for Surface {
     ) -> (
         hal::SurfaceCapabilities,
         Option<Vec<format::Format>>,
-        Vec<hal::PresentMode>,
+        Vec<PresentMode>,
     ) {
         let current_extent = if self.main_thread_id == thread::current().id() {
             Some(self.inner.dimensions())
@@ -362,13 +364,178 @@ impl hal::Surface<Backend> for Surface {
             device_caps.os_is_mac && device_caps.has_version_at_least(10, 13);
 
         let present_modes = if can_set_display_sync {
-            vec![hal::PresentMode::Fifo, hal::PresentMode::Immediate]
+            vec![PresentMode::Fifo, PresentMode::Immediate]
         } else {
-            vec![hal::PresentMode::Fifo]
+            vec![PresentMode::Fifo]
         };
 
         (caps, Some(formats), present_modes)
     }
+
+        /// Set up the swapchain associated with the surface to have the given format.
+    unsafe fn configure_swapchain(
+        &self, device: &native::Device, config: SurfaceSwapchainConfig
+    ) -> Result<(), CreationError> {
+        info!("configure_swapchain {:?}", config);
+
+        let caps = &self.shared.private_caps;
+        let mtl_format = caps
+            .map_format(config.format)
+            .expect("unsupported backbuffer format");
+
+        let render_layer_borrow = self.inner.render_layer.lock();
+        let render_layer = *render_layer_borrow;
+        let format_desc = config.format.surface_desc();
+        let framebuffer_only = true;
+        let display_sync = config.present_mode != PresentMode::Immediate;
+        let is_mac = caps.os_is_mac;
+        let can_set_next_drawable_timeout = if is_mac {
+            caps.has_version_at_least(10, 13)
+        } else {
+            caps.has_version_at_least(11, 0)
+        };
+        let can_set_display_sync = is_mac && caps.has_version_at_least(10, 13);
+        let dims = self.inner.dimensions();
+        let drawable_size = CGSize::new(config.extent.width as f64, config.extent.height as f64);
+
+        let cmd_queue = self.shared.queue.lock();
+
+        unsafe {
+            let device_raw = self.shared.device.lock().as_ptr();
+            msg_send![render_layer, setDevice: device_raw];
+            msg_send![render_layer, setPixelFormat: mtl_format];
+            msg_send![render_layer, setFramebufferOnly: framebuffer_only];
+
+            // this gets ignored on iOS for certain OS/device combinations (iphone5s iOS 10.3)
+            msg_send![render_layer, setMaximumDrawableCount: config.image_count as u64];
+
+            msg_send![render_layer, setDrawableSize: drawable_size];
+            if can_set_next_drawable_timeout {
+                msg_send![render_layer, setAllowsNextDrawableTimeout:false];
+            }
+            if can_set_display_sync {
+                msg_send![render_layer, setDisplaySyncEnabled: display_sync];
+            }
+        };
+
+        let frames = (0..config.image_count)
+            .map(|index| {
+                autoreleasepool(|| {
+                    // for the drawable & texture
+                    let (drawable, texture) = unsafe {
+                        let drawable: &metal::DrawableRef = msg_send![render_layer, nextDrawable];
+                        assert!(!drawable.as_ptr().is_null());
+                        let texture: &metal::TextureRef = msg_send![drawable, texture];
+                        (drawable, texture)
+                    };
+                    trace!("\tframe[{}] = {:?}", index, texture);
+
+                    let drawable = if index == 0 {
+                        // when resizing, this trick frees up the currently shown frame
+                        match old_swapchain {
+                            Some(ref old) => {
+                                let cmd_buffer = cmd_queue.spawn_temp();
+                                self.shared.service_pipes.simple_blit(
+                                    &self.shared.device,
+                                    cmd_buffer,
+                                    &old.frames[0].texture,
+                                    texture,
+                                    &self.shared.private_caps,
+                                );
+                                cmd_buffer.present_drawable(drawable);
+                                cmd_buffer.set_label("build_swapchain");
+                                cmd_buffer.commit();
+                                cmd_buffer.wait_until_completed();
+                            }
+                            None => {
+                                // this will look as a black frame
+                                drawable.present();
+                            }
+                        }
+                        None
+                    } else {
+                        Some(drawable.to_owned())
+                    };
+                    Frame {
+                        inner: Mutex::new(FrameInner {
+                            drawable,
+                            signpost: if index != 0 && surface.inner.enable_signposts {
+                                Some(native::Signpost::new(SIGNPOST_ID, [1, index as usize, 0, 0]))
+                            } else {
+                                None
+                            },
+                            available: true,
+                            linked: true,
+                            iteration: 0,
+                            last_frame: 0,
+                        }),
+                        texture: texture.to_owned(),
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let images = frames
+            .iter()
+            .map(|frame| native::Image {
+                like: native::ImageLike::Texture(frame.texture.clone()),
+                kind: image::Kind::D2(config.extent.width, config.extent.height, 1, 1),
+                format_desc,
+                shader_channel: Channel::Float,
+                mtl_format,
+                mtl_type: metal::MTLTextureType::D2,
+            })
+            .collect();
+
+        let swapchain = Swapchain {
+            frames: Arc::new(frames),
+            surface: surface.inner.clone(),
+            extent: config.extent,
+            last_frame: 0,
+            acquire_mode: AcquireMode::Oldest,
+        };
+
+        (swapchain, images)
+    }
+
+    /// An opaque type wrapping the swapchain image.
+    type SwapchainImage: Borrow<B::ImageView> + fmt::Debug + Send + Sync;
+
+    /// Acquire a new swapchain image for rendering.
+    ///
+    /// May fail according to one of the reasons indicated in `AcquireError` enum.
+    ///
+    /// # Synchronization
+    ///
+    /// The acquired image is available to render. No synchronization is required.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    ///
+    /// ```
+    unsafe fn acquire_image(
+        &mut self,
+        timeout_ns: u64,
+    ) -> Result<(Self::SwapchainImage, SwapchainImageId, Option<Suboptimal>), AcquireError>;
+
+    /// Present the acquired image.
+    ///
+    /// # Safety
+    ///
+    /// The passed queue _must_ support presentation on the surface, which is
+    /// used for creating this swapchain.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    ///
+    /// ```
+    unsafe fn present<C: Capability>(
+        &self,
+        present_queue: &mut CommandQueue<B, C>,
+        image: Self::SwapchainImage,
+    ) -> Result<Option<Suboptimal>, PresentError>;
 }
 
 impl Device {
@@ -392,7 +559,7 @@ impl Device {
         let render_layer = *render_layer_borrow;
         let format_desc = config.format.surface_desc();
         let framebuffer_only = config.image_usage == image::Usage::COLOR_ATTACHMENT;
-        let display_sync = config.present_mode != hal::PresentMode::Immediate;
+        let display_sync = config.present_mode != PresentMode::Immediate;
         let is_mac = caps.os_is_mac;
         let can_set_next_drawable_timeout = if is_mac {
             caps.has_version_at_least(10, 13)
