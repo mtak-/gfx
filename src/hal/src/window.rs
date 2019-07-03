@@ -173,6 +173,12 @@ pub struct SurfaceCapabilities {
 /// A `Surface` abstracts the surface of a native window, which will be presented
 /// on the display.
 pub trait Surface<B: Backend>: fmt::Debug + Any + Send + Sync {
+    /// An opaque type wrapping the swapchain image.
+    type SwapchainImage: Borrow<B::ImageView> + fmt::Debug + Send + Sync;
+
+    /// Retrieve the surface image kind.
+    fn kind(&self) -> image::Kind;
+
     /// Check if the queue family supports presentation to this surface.
     ///
     /// # Examples
@@ -196,11 +202,8 @@ pub trait Surface<B: Backend>: fmt::Debug + Any + Send + Sync {
 
     /// Set up the swapchain associated with the surface to have the given format.
     unsafe fn configure_swapchain(
-        &self, device: &B::Device, config: SurfaceSwapchainConfig
+        &mut self, device: &B::Device, config: SurfaceSwapchainConfig
     ) -> Result<(), CreationError>;
-
-    /// An opaque type wrapping the swapchain image.
-    type SwapchainImage: Borrow<B::ImageView> + fmt::Debug + Send + Sync;
 
     /// Acquire a new swapchain image for rendering.
     ///
@@ -219,24 +222,6 @@ pub trait Surface<B: Backend>: fmt::Debug + Any + Send + Sync {
         &mut self,
         timeout_ns: u64,
     ) -> Result<(Self::SwapchainImage, SwapchainImageId, Option<Suboptimal>), AcquireError>;
-
-    /// Present the acquired image.
-    ///
-    /// # Safety
-    ///
-    /// The passed queue _must_ support presentation on the surface, which is
-    /// used for creating this swapchain.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    ///
-    /// ```
-    unsafe fn present<C: Capability>(
-        &self,
-        present_queue: &mut CommandQueue<B, C>,
-        image: Self::SwapchainImage,
-    ) -> Result<Option<Suboptimal>, PresentError>;
 }
 
 /// Index of an image in the swapchain.

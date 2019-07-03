@@ -18,7 +18,7 @@ use std::marker::PhantomData;
 use crate::command::{Primary, Submittable};
 use crate::error::HostExecutionError;
 use crate::pso;
-use crate::window::{PresentError, Suboptimal, SwapImageIndex};
+use crate::window::{PresentError, Suboptimal, Surface, SwapImageIndex};
 use crate::Backend;
 
 pub use self::capability::{Capability, Compute, General, Graphics, Supports, Transfer};
@@ -86,6 +86,13 @@ pub trait RawCommandQueue<B: Backend>: fmt::Debug + Any + Send + Sync {
         Is: IntoIterator<Item = (&'a W, SwapImageIndex)>,
         S: 'a + Borrow<B::Semaphore>,
         Iw: IntoIterator<Item = &'a S>;
+
+    /// Present the a
+    unsafe fn present_surface(
+        &mut self,
+        surface: &B::Surface,
+        image: <B::Surface as Surface<B>>::SwapchainImage,
+    ) -> Result<Option<Suboptimal>, PresentError>;
 
     /// Wait for the queue to idle.
     fn wait_idle(&self) -> Result<(), HostExecutionError>;
@@ -170,6 +177,15 @@ impl<B: Backend, C: Capability> CommandQueue<B, C> {
         Iw: IntoIterator<Item = &'a S>,
     {
         self.0.present(swapchains, wait_semaphores)
+    }
+
+    /// Presents the surface that is merged with a swapchain.
+    pub unsafe fn present_surface(
+        &mut self,
+        surface: &B::Surface,
+        image: <B::Surface as Surface<B>>::SwapchainImage,
+    ) -> Result<Option<Suboptimal>, PresentError> {
+        self.0.present_surface(surface, image)
     }
 
     /// Wait for the queue to idle.

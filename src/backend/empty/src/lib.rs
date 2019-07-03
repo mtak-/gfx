@@ -138,6 +138,14 @@ impl queue::RawCommandQueue<Backend> for RawCommandQueue {
         unimplemented!()
     }
 
+    unsafe fn present_surface(
+        &mut self,
+        _surface: &Surface,
+        _image: (),
+    ) -> Result<Option<window::Suboptimal>, window::PresentError> {
+        unimplemented!()
+    }
+
     fn wait_idle(&self) -> Result<(), error::HostExecutionError> {
         unimplemented!()
     }
@@ -904,7 +912,7 @@ impl hal::Surface<Backend> for Surface {
     }
 
     unsafe fn configure_swapchain(
-        &self, _: &Device, _: hal::SurfaceSwapchainConfig
+        &mut self, _: &Device, _: hal::SurfaceSwapchainConfig
     ) -> Result<(), hal::window::CreationError> {
         unimplemented!()
     }
@@ -914,15 +922,7 @@ impl hal::Surface<Backend> for Surface {
     unsafe fn acquire_image(
         &mut self,
         _: u64,
-    ) -> Result<((), hal::SwapchainImageId, Option<hal::window::Suboptimal>), hal::AcquireError> {
-        unimplemented!()
-    }
-
-    unsafe fn present<'a, C>(
-        &'a self,
-        _: &mut hal::CommandQueue<Backend, C>,
-        _: (),
-    ) -> Result<Option<hal::window::Suboptimal>, hal::window::PresentError> {
+    ) -> Result<((), hal::SwapchainImageId, Option<window::Suboptimal>), hal::AcquireError> {
         unimplemented!()
     }
 }
@@ -936,7 +936,7 @@ impl hal::Swapchain<Backend> for Swapchain {
         _: u64,
         _: Option<&()>,
         _: Option<&()>,
-    ) -> Result<(hal::SwapImageIndex, Option<hal::window::Suboptimal>), hal::AcquireError> {
+    ) -> Result<(hal::SwapImageIndex, Option<window::Suboptimal>), hal::AcquireError> {
         unimplemented!()
     }
 }

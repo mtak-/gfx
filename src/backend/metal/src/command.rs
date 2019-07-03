@@ -2304,6 +2304,23 @@ impl RawCommandQueue<Backend> for CommandQueue {
         Ok(None)
     }
 
+    unsafe fn present_surface(
+        &mut self,
+        _surface: &window::Surface,
+        image: window::SurfaceImage,
+    ) -> Result<Option<Suboptimal>, PresentError> {
+        let queue = self.shared.queue.lock();
+        autoreleasepool(|| {
+            let command_buffer = queue.raw.new_command_buffer();
+            command_buffer.set_label("present");
+            self.record_empty(command_buffer);
+
+            command_buffer.present_drawable(&image.drawable);
+            command_buffer.commit();
+        });
+        Ok(None)
+    }
+
     fn wait_idle(&self) -> Result<(), error::HostExecutionError> {
         QueueInner::wait_idle(&self.shared.queue);
         Ok(())

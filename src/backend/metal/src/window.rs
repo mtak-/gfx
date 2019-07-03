@@ -13,7 +13,7 @@ use hal::{
     SurfaceSwapchainConfig,
     CompositeAlpha,
     PresentMode,
-    window::{Extent2D, Suboptimal},
+    window::{CreationError, Extent2D, Suboptimal},
 };
 
 use core_graphics::base::CGFloat;
@@ -24,6 +24,7 @@ use objc::rc::autoreleasepool;
 use objc::runtime::Object;
 use parking_lot::{Mutex, MutexGuard};
 
+use std::borrow::Borrow;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::thread;
@@ -40,6 +41,7 @@ const SIGNPOST_ID: u32 = 0x100;
 #[derive(Debug)]
 pub struct Surface {
     inner: Arc<SurfaceInner>,
+    swapchain_format: metal::MTLPixelFormat,
     main_thread_id: thread::ThreadId,
 }
 
@@ -85,6 +87,7 @@ impl SurfaceInner {
         self.enable_signposts = enable_signposts;
         Surface {
             inner: Arc::new(self),
+            swapchain_format: metal::MTLPixelFormat::Invalid,
             main_thread_id: thread::current().id(),
         }
     }
@@ -301,7 +304,29 @@ impl SwapchainImage {
     }
 }
 
+#[derive(Debug)]
+pub struct SurfaceImage {
+    pub(crate) drawable: metal::Drawable,
+    view: native::ImageView,
+}
+
+unsafe impl Send for SurfaceImage {}
+unsafe impl Sync for SurfaceImage {}
+
+impl Borrow<native::ImageView> for SurfaceImage {
+    fn borrow(&self) -> &native::ImageView {
+        &self.view
+    }
+}
+
 impl hal::Surface<Backend> for Surface {
+    type SwapchainImage = SurfaceImage;
+
+    fn kind(&self) -> image::Kind {
+        let ex = self.inner.dimensions();
+        image::Kind::D2(ex.width, ex.height, 1, 1)
+    }
+
     fn supports_queue_family(&self, _queue_family: &QueueFamily) -> bool {
         // we only expose one family atm, so it's compatible
         true
@@ -374,18 +399,18 @@ impl hal::Surface<Backend> for Surface {
 
         /// Set up the swapchain associated with the surface to have the given format.
     unsafe fn configure_swapchain(
-        &self, device: &native::Device, config: SurfaceSwapchainConfig
+        &mut self, device: &Device, config: SurfaceSwapchainConfig
     ) -> Result<(), CreationError> {
         info!("configure_swapchain {:?}", config);
 
-        let caps = &self.shared.private_caps;
+        let caps = &device.shared.private_caps;
         let mtl_format = caps
             .map_format(config.format)
             .expect("unsupported backbuffer format");
+        self.swapchain_format = mtl_format;
 
         let render_layer_borrow = self.inner.render_layer.lock();
         let render_layer = *render_layer_borrow;
-        let format_desc = config.format.surface_desc();
         let framebuffer_only = true;
         let display_sync = config.present_mode != PresentMode::Immediate;
         let is_mac = caps.os_is_mac;
@@ -396,110 +421,26 @@ impl hal::Surface<Backend> for Surface {
         };
         let can_set_display_sync = is_mac && caps.has_version_at_least(10, 13);
         let dims = self.inner.dimensions();
-        let drawable_size = CGSize::new(config.extent.width as f64, config.extent.height as f64);
+        let drawable_size = CGSize::new(dims.width as f64, dims.height as f64);
 
-        let cmd_queue = self.shared.queue.lock();
+        let device_raw = device.shared.device.lock().as_ptr();
+        msg_send![render_layer, setDevice: device_raw];
+        msg_send![render_layer, setPixelFormat: mtl_format];
+        msg_send![render_layer, setFramebufferOnly: framebuffer_only];
 
-        unsafe {
-            let device_raw = self.shared.device.lock().as_ptr();
-            msg_send![render_layer, setDevice: device_raw];
-            msg_send![render_layer, setPixelFormat: mtl_format];
-            msg_send![render_layer, setFramebufferOnly: framebuffer_only];
+        // this gets ignored on iOS for certain OS/device combinations (iphone5s iOS 10.3)
+        msg_send![render_layer, setMaximumDrawableCount: config.image_count as u64];
 
-            // this gets ignored on iOS for certain OS/device combinations (iphone5s iOS 10.3)
-            msg_send![render_layer, setMaximumDrawableCount: config.image_count as u64];
+        msg_send![render_layer, setDrawableSize: drawable_size];
+        if can_set_next_drawable_timeout {
+            msg_send![render_layer, setAllowsNextDrawableTimeout:false];
+        }
+        if can_set_display_sync {
+            msg_send![render_layer, setDisplaySyncEnabled: display_sync];
+        }
 
-            msg_send![render_layer, setDrawableSize: drawable_size];
-            if can_set_next_drawable_timeout {
-                msg_send![render_layer, setAllowsNextDrawableTimeout:false];
-            }
-            if can_set_display_sync {
-                msg_send![render_layer, setDisplaySyncEnabled: display_sync];
-            }
-        };
-
-        let frames = (0..config.image_count)
-            .map(|index| {
-                autoreleasepool(|| {
-                    // for the drawable & texture
-                    let (drawable, texture) = unsafe {
-                        let drawable: &metal::DrawableRef = msg_send![render_layer, nextDrawable];
-                        assert!(!drawable.as_ptr().is_null());
-                        let texture: &metal::TextureRef = msg_send![drawable, texture];
-                        (drawable, texture)
-                    };
-                    trace!("\tframe[{}] = {:?}", index, texture);
-
-                    let drawable = if index == 0 {
-                        // when resizing, this trick frees up the currently shown frame
-                        match old_swapchain {
-                            Some(ref old) => {
-                                let cmd_buffer = cmd_queue.spawn_temp();
-                                self.shared.service_pipes.simple_blit(
-                                    &self.shared.device,
-                                    cmd_buffer,
-                                    &old.frames[0].texture,
-                                    texture,
-                                    &self.shared.private_caps,
-                                );
-                                cmd_buffer.present_drawable(drawable);
-                                cmd_buffer.set_label("build_swapchain");
-                                cmd_buffer.commit();
-                                cmd_buffer.wait_until_completed();
-                            }
-                            None => {
-                                // this will look as a black frame
-                                drawable.present();
-                            }
-                        }
-                        None
-                    } else {
-                        Some(drawable.to_owned())
-                    };
-                    Frame {
-                        inner: Mutex::new(FrameInner {
-                            drawable,
-                            signpost: if index != 0 && surface.inner.enable_signposts {
-                                Some(native::Signpost::new(SIGNPOST_ID, [1, index as usize, 0, 0]))
-                            } else {
-                                None
-                            },
-                            available: true,
-                            linked: true,
-                            iteration: 0,
-                            last_frame: 0,
-                        }),
-                        texture: texture.to_owned(),
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let images = frames
-            .iter()
-            .map(|frame| native::Image {
-                like: native::ImageLike::Texture(frame.texture.clone()),
-                kind: image::Kind::D2(config.extent.width, config.extent.height, 1, 1),
-                format_desc,
-                shader_channel: Channel::Float,
-                mtl_format,
-                mtl_type: metal::MTLTextureType::D2,
-            })
-            .collect();
-
-        let swapchain = Swapchain {
-            frames: Arc::new(frames),
-            surface: surface.inner.clone(),
-            extent: config.extent,
-            last_frame: 0,
-            acquire_mode: AcquireMode::Oldest,
-        };
-
-        (swapchain, images)
+        Ok(())
     }
-
-    /// An opaque type wrapping the swapchain image.
-    type SwapchainImage: Borrow<B::ImageView> + fmt::Debug + Send + Sync;
 
     /// Acquire a new swapchain image for rendering.
     ///
@@ -516,26 +457,27 @@ impl hal::Surface<Backend> for Surface {
     /// ```
     unsafe fn acquire_image(
         &mut self,
-        timeout_ns: u64,
-    ) -> Result<(Self::SwapchainImage, SwapchainImageId, Option<Suboptimal>), AcquireError>;
+        _timeout_ns: u64, //TODO: use the timeout
+    ) -> Result<(Self::SwapchainImage, hal::SwapchainImageId, Option<Suboptimal>), hal::AcquireError> {
+        // for the drawable & texture
+        let render_layer_borrow = self.inner.render_layer.lock();
+        let (drawable, texture) = autoreleasepool(|| {
+            let drawable: &metal::DrawableRef = msg_send![*render_layer_borrow, nextDrawable];
+            assert!(!drawable.as_ptr().is_null());
+            let texture: &metal::TextureRef = msg_send![drawable, texture];
+            (drawable, texture)
+        });
 
-    /// Present the acquired image.
-    ///
-    /// # Safety
-    ///
-    /// The passed queue _must_ support presentation on the surface, which is
-    /// used for creating this swapchain.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    ///
-    /// ```
-    unsafe fn present<C: Capability>(
-        &self,
-        present_queue: &mut CommandQueue<B, C>,
-        image: Self::SwapchainImage,
-    ) -> Result<Option<Suboptimal>, PresentError>;
+        let id = texture.as_ptr() as usize as hal::SwapchainImageId; //HACK
+        let image = SurfaceImage {
+            drawable: drawable.to_owned(),
+            view: native::ImageView {
+                raw: texture.to_owned(),
+                mtl_format: self.swapchain_format,
+            },
+        };
+        Ok((image, id, None))
+    }
 }
 
 impl Device {
