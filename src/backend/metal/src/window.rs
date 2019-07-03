@@ -420,8 +420,10 @@ impl hal::Surface<Backend> for Surface {
             caps.has_version_at_least(11, 0)
         };
         let can_set_display_sync = is_mac && caps.has_version_at_least(10, 13);
-        let dims = self.inner.dimensions();
-        let drawable_size = CGSize::new(dims.width as f64, dims.height as f64);
+        let drawable_size = {
+            let bounds: CGRect = msg_send![render_layer, bounds];
+            bounds.size
+        };
 
         let device_raw = device.shared.device.lock().as_ptr();
         msg_send![render_layer, setDevice: device_raw];
@@ -461,18 +463,18 @@ impl hal::Surface<Backend> for Surface {
     ) -> Result<(Self::SwapchainImage, hal::SwapchainImageId, Option<Suboptimal>), hal::AcquireError> {
         // for the drawable & texture
         let render_layer_borrow = self.inner.render_layer.lock();
-        let (drawable, texture) = autoreleasepool(|| {
+        let (drawable, raw) = autoreleasepool(|| {
             let drawable: &metal::DrawableRef = msg_send![*render_layer_borrow, nextDrawable];
             assert!(!drawable.as_ptr().is_null());
             let texture: &metal::TextureRef = msg_send![drawable, texture];
-            (drawable, texture)
+            (drawable.to_owned(), texture.to_owned())
         });
 
-        let id = texture.as_ptr() as usize as hal::SwapchainImageId; //HACK
+        let id = raw.as_ptr() as usize as hal::SwapchainImageId; //HACK
         let image = SurfaceImage {
-            drawable: drawable.to_owned(),
+            drawable,
             view: native::ImageView {
-                raw: texture.to_owned(),
+                raw,
                 mtl_format: self.swapchain_format,
             },
         };

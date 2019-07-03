@@ -35,7 +35,6 @@ pub fn wasm_main() {
 use hal::format::{AsFormat, ChannelType, Rgba8Srgb as ColorFormat, Swizzle};
 use hal::pass::Subpass;
 use hal::pso::{PipelineStage, ShaderStageFlags, VertexInputRate};
-use hal::queue::Submission;
 use hal::{
     buffer,
     command,
@@ -47,10 +46,15 @@ use hal::{
     pso,
     window::Extent2D,
 };
-use hal::{DescriptorPool, Primitive, SwapchainConfig};
-use hal::{Device, Instance, PhysicalDevice, Surface, Swapchain};
+use hal::{DescriptorPool, Primitive, SurfaceSwapchainConfig};
+use hal::{Device, Instance, PhysicalDevice, Surface};
 
-use std::io::Cursor;
+use std::{
+    borrow::Borrow,
+    io::Cursor,
+    iter,
+    collections::hash_map::{Entry, HashMap},
+};
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
 const DIMS: Extent2D = Extent2D { width: 1024,height: 768 };
@@ -389,7 +393,10 @@ fn main() {
 
         cmd_buffer.finish();
 
-        queue_group.queues[0].submit_without_semaphores(Some(&cmd_buffer), Some(&mut copy_fence));
+        queue_group.queues[0].submit_without_semaphores(
+            iter::once(&cmd_buffer),
+            Some(&mut copy_fence),
+        );
 
         device
             .wait_for_fence(&copy_fence, !0)
@@ -410,13 +417,12 @@ fn main() {
             .unwrap_or(formats[0])
     });
 
-    let swap_config = SwapchainConfig::from_caps(&caps, format, DIMS);
+    let swap_config = SurfaceSwapchainConfig::from_caps(&caps, format);
     println!("{:?}", swap_config);
-    let extent = swap_config.extent.to_extent();
-
-    let (mut swap_chain, mut backbuffer) =
-        unsafe { device.create_swapchain(&mut surface, swap_config, None) }
-            .expect("Can't create swapchain");
+    unsafe {
+        surface.configure_swapchain(&device, swap_config)
+            .expect("Can't configure swapchain");
+    }
 
     let render_pass = {
         let attachment = pass::Attachment {
@@ -450,47 +456,13 @@ fn main() {
             .expect("Can't create render pass")
     };
 
-    let (mut frame_images, mut framebuffers) = {
-        let pairs = backbuffer
-            .into_iter()
-            .map(|image| unsafe {
-                let rtv = device
-                    .create_image_view(
-                        &image,
-                        i::ViewKind::D2,
-                        format,
-                        Swizzle::NO,
-                        COLOR_RANGE.clone(),
-                    )
-                    .unwrap();
-                (image, rtv)
-            })
-            .collect::<Vec<_>>();
-        let fbos = pairs
-            .iter()
-            .map(|&(_, ref rtv)| unsafe {
-                device
-                    .create_framebuffer(&render_pass, Some(rtv), extent)
-                    .unwrap()
-            })
-            .collect::<Vec<_>>();
-        (pairs, fbos)
-    };
+    let mut framebuffers = HashMap::new();
 
     // Define maximum number of frames we want to be able to be "in flight" (being computed
     // simultaneously) at once
     let frames_in_flight = 3;
 
-    // Number of image acquisition semaphores is based on the number of swapchain images, not frames in flight,
-    // plus one extra which we can guarantee is unused at any given time by swapping it out with the ones
-    // in the rest of the queue.
-    let mut image_acquire_semaphores = Vec::with_capacity(frame_images.len());
-    let mut free_acquire_semaphore = device
-        .create_semaphore()
-        .expect("Could not create semaphore");
-
     // The number of the rest of the resources is based on the frames in flight.
-    let mut submission_complete_semaphores = Vec::with_capacity(frames_in_flight);
     let mut submission_complete_fences = Vec::with_capacity(frames_in_flight);
     // Note: We don't really need a different command pool per frame in such a simple demo like this,
     // but in a more 'real' application, it's generally seen as optimal to have one command pool per
@@ -515,20 +487,7 @@ fn main() {
         }
     }
 
-    for _ in 0 .. frame_images.len() {
-        image_acquire_semaphores.push(
-            device
-                .create_semaphore()
-                .expect("Could not create semaphore"),
-        );
-    }
-
-    for i in 0 .. frames_in_flight {
-        submission_complete_semaphores.push(
-            device
-                .create_semaphore()
-                .expect("Could not create semaphore"),
-        );
+    for i in 0..frames_in_flight {
         submission_complete_fences.push(
             device
                 .create_fence(true)
@@ -544,6 +503,7 @@ fn main() {
         )
     }
     .expect("Can't create pipeline layout");
+
     let pipeline = {
         let vs_module = {
             let spirv =
@@ -635,8 +595,8 @@ fn main() {
         rect: pso::Rect {
             x: 0,
             y: 0,
-            w: extent.width as _,
-            h: extent.height as _,
+            w: DIMS.width as _,
+            h: DIMS.height as _,
         },
         depth: 0.0 .. 1.0,
     };
@@ -645,8 +605,8 @@ fn main() {
     let mut running = true;
     let mut recreate_swapchain = false;
     let mut resize_dims = Extent2D {
-        width: 0,
-        height: 0,
+        width: DIMS.width,
+        height: DIMS.height,
     };
     let mut frame: u64 = 0;
     while running {
@@ -690,78 +650,39 @@ fn main() {
             // Verify that previous format still exists so we may reuse it.
             assert!(formats.iter().any(|fs| fs.contains(&format)));
 
-            let swap_config = SwapchainConfig::from_caps(&caps, format, resize_dims);
+            let swap_config = SurfaceSwapchainConfig::from_caps(&caps, format);
             println!("{:?}", swap_config);
-            let extent = swap_config.extent.to_extent();
-
-            let (new_swap_chain, new_backbuffer) =
-                unsafe { device.create_swapchain(&mut surface, swap_config, Some(swap_chain)) }
-                    .expect("Can't create swapchain");
-
             unsafe {
-                // Clean up the old framebuffers, images and swapchain
-                for framebuffer in framebuffers {
-                    device.destroy_framebuffer(framebuffer);
-                }
-                for (_, rtv) in frame_images {
-                    device.destroy_image_view(rtv);
-                }
+                surface.configure_swapchain(&device, swap_config)
+                    .expect("Can't configure swapchain");
             }
 
-            backbuffer = new_backbuffer;
-            swap_chain = new_swap_chain;
-
-            let (new_frame_images, new_framebuffers) = {
-                let pairs = backbuffer
-                    .into_iter()
-                    .map(|image| unsafe {
-                        let rtv = device
-                            .create_image_view(
-                                &image,
-                                i::ViewKind::D2,
-                                format,
-                                Swizzle::NO,
-                                COLOR_RANGE.clone(),
-                            )
-                            .unwrap();
-                        (image, rtv)
-                    })
-                    .collect::<Vec<_>>();
-                let fbos = pairs
-                    .iter()
-                    .map(|&(_, ref rtv)| unsafe {
-                        device
-                            .create_framebuffer(&render_pass, Some(rtv), extent)
-                            .unwrap()
-                    })
-                    .collect();
-                (pairs, fbos)
-            };
-
-            framebuffers = new_framebuffers;
-            frame_images = new_frame_images;
-            viewport.rect.w = extent.width as _;
-            viewport.rect.h = extent.height as _;
+            viewport.rect.w = resize_dims.width as _;
+            viewport.rect.h = resize_dims.height as _;
             recreate_swapchain = false;
+            framebuffers.clear();
         }
 
-        // Use guaranteed unused acquire semaphore to get the index of the next frame we will render to
-        // by using acquire_image
-        let swap_image = unsafe {
-            match swap_chain.acquire_image(!0, Some(&free_acquire_semaphore), None) {
-                Ok((i, _)) => i as usize,
-                Err(_) => {
-                    recreate_swapchain = true;
-                    continue;
-                }
+        let (surface_image, unique_id) = match unsafe { surface.acquire_image(!0) } {
+            Ok((image, id, _)) => (image, id),
+            Err(_) => {
+                recreate_swapchain = true;
+                continue;
             }
         };
-
-        // Swap the acquire semaphore with the one previously associated with the image we are acquiring
-        core::mem::swap(
-            &mut free_acquire_semaphore,
-            &mut image_acquire_semaphores[swap_image],
-        );
+        let framebuffer = match framebuffers.entry(unique_id) {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => unsafe {
+                let framebuffer = device
+                    .create_framebuffer(
+                        &render_pass,
+                        iter::once(surface_image.borrow()),
+                        resize_dims.to_extent(),
+                    )
+                    .unwrap();
+                e.insert(framebuffer)
+            }
+        };
 
         // Compute index into our resource ring buffers based on the frame number
         // and number of frames in flight. Pay close attention to where this index is needed
@@ -797,7 +718,7 @@ fn main() {
             {
                 let mut encoder = cmd_buffer.begin_render_pass_inline(
                     &render_pass,
-                    &framebuffers[swap_image],
+                    framebuffer,
                     viewport.rect,
                     &[command::ClearValue::Color(command::ClearColor::Sfloat([
                         0.8, 0.8, 0.8, 1.0,
@@ -807,22 +728,15 @@ fn main() {
             }
 
             cmd_buffer.finish();
-
-            let submission = Submission {
-                command_buffers: Some(&*cmd_buffer),
-                wait_semaphores: Some((
-                    &image_acquire_semaphores[swap_image],
-                    PipelineStage::COLOR_ATTACHMENT_OUTPUT,
-                )),
-                signal_semaphores: Some(&submission_complete_semaphores[frame_idx]),
-            };
-            queue_group.queues[0].submit(submission, Some(&submission_complete_fences[frame_idx]));
+            queue_group.queues[0].submit_without_semaphores(
+                iter::once(&*cmd_buffer),
+                Some(&submission_complete_fences[frame_idx]),
+            );
 
             // present frame
-            if let Err(_) = swap_chain.present(
-                &mut queue_group.queues[0],
-                swap_image as hal::SwapImageIndex,
-                Some(&submission_complete_semaphores[frame_idx]),
+            if let Err(_) = queue_group.queues[0].present_surface(
+                &surface,
+                surface_image,
             ) {
                 recreate_swapchain = true;
             }
@@ -842,15 +756,8 @@ fn main() {
         device.destroy_image(image_logo);
         device.destroy_image_view(image_srv);
         device.destroy_sampler(sampler);
-        device.destroy_semaphore(free_acquire_semaphore);
         for p in cmd_pools {
             device.destroy_command_pool(p.into_raw());
-        }
-        for s in image_acquire_semaphores {
-            device.destroy_semaphore(s);
-        }
-        for s in submission_complete_semaphores {
-            device.destroy_semaphore(s);
         }
         for f in submission_complete_fences {
             device.destroy_fence(f);
@@ -861,14 +768,9 @@ fn main() {
         device.free_memory(image_upload_memory);
         device.destroy_graphics_pipeline(pipeline);
         device.destroy_pipeline_layout(pipeline_layout);
-        for framebuffer in framebuffers {
+        for (_, framebuffer) in framebuffers {
             device.destroy_framebuffer(framebuffer);
         }
-        for (_, rtv) in frame_images {
-            device.destroy_image_view(rtv);
-        }
-
-        device.destroy_swapchain(swap_chain);
     }
 }
 
