@@ -140,7 +140,7 @@ impl queue::RawCommandQueue<Backend> for RawCommandQueue {
 
     unsafe fn present_surface(
         &mut self,
-        _surface: &Surface,
+        _surface: &mut Surface,
         _image: (),
     ) -> Result<Option<window::Suboptimal>, window::PresentError> {
         unimplemented!()
@@ -922,7 +922,7 @@ impl hal::Surface<Backend> for Surface {
     unsafe fn acquire_image(
         &mut self,
         _: u64,
-    ) -> Result<((), hal::SwapchainImageId, Option<window::Suboptimal>), hal::AcquireError> {
+    ) -> Result<((), Option<window::Suboptimal>), hal::AcquireError> {
         unimplemented!()
     }
 }

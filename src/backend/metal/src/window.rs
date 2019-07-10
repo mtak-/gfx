@@ -39,10 +39,23 @@ pub type CAMetalLayer = *mut Object;
 const SIGNPOST_ID: u32 = 0x100;
 
 #[derive(Debug)]
+struct ActiveDrawable(Arc<metal::Drawable>);
+
+unsafe impl Send for ActiveDrawable {}
+unsafe impl Sync for ActiveDrawable {}
+
+#[derive(Debug)]
 pub struct Surface {
     inner: Arc<SurfaceInner>,
+    active_drawable: Option<ActiveDrawable>,
     swapchain_format: metal::MTLPixelFormat,
     main_thread_id: thread::ThreadId,
+}
+
+impl Surface {
+    pub(crate) fn take_drawable(&mut self) -> Arc<metal::Drawable> {
+        self.active_drawable.take().expect("Drawable not acquired?").0
+    }
 }
 
 #[derive(Debug)]
@@ -87,6 +100,7 @@ impl SurfaceInner {
         self.enable_signposts = enable_signposts;
         Surface {
             inner: Arc::new(self),
+            active_drawable: None,
             swapchain_format: metal::MTLPixelFormat::Invalid,
             main_thread_id: thread::current().id(),
         }
@@ -306,12 +320,8 @@ impl SwapchainImage {
 
 #[derive(Debug)]
 pub struct SurfaceImage {
-    pub(crate) drawable: metal::Drawable,
     view: native::ImageView,
 }
-
-unsafe impl Send for SurfaceImage {}
-unsafe impl Sync for SurfaceImage {}
 
 impl Borrow<native::ImageView> for SurfaceImage {
     fn borrow(&self) -> &native::ImageView {
@@ -460,25 +470,23 @@ impl hal::Surface<Backend> for Surface {
     unsafe fn acquire_image(
         &mut self,
         _timeout_ns: u64, //TODO: use the timeout
-    ) -> Result<(Self::SwapchainImage, hal::SwapchainImageId, Option<Suboptimal>), hal::AcquireError> {
+    ) -> Result<(Self::SwapchainImage, Option<Suboptimal>), hal::AcquireError> {
         // for the drawable & texture
         let render_layer_borrow = self.inner.render_layer.lock();
-        let (drawable, raw) = autoreleasepool(|| {
+        let drawable = autoreleasepool(|| {
             let drawable: &metal::DrawableRef = msg_send![*render_layer_borrow, nextDrawable];
             assert!(!drawable.as_ptr().is_null());
-            let texture: &metal::TextureRef = msg_send![drawable, texture];
-            (drawable.to_owned(), texture.to_owned())
+            drawable.to_owned()
         });
 
-        let id = raw.as_ptr() as usize as hal::SwapchainImageId; //HACK
+        let drawable = Arc::new(drawable);
         let image = SurfaceImage {
-            drawable,
-            view: native::ImageView {
-                raw,
-                mtl_format: self.swapchain_format,
-            },
+            view: native::ImageView::Drawable(Arc::clone(&drawable)),
         };
-        Ok((image, id, None))
+        let old = self.active_drawable.replace(ActiveDrawable(drawable));
+        assert!(old.is_none(), "Last frame wasn't presented");
+
+        Ok((image, None))
     }
 }
 

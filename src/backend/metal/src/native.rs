@@ -34,7 +34,7 @@ use std::{
     ops::Range,
     os::raw::{c_long, c_void},
     ptr,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{atomic::AtomicBool, Arc, Weak},
 };
 
 
@@ -99,17 +99,32 @@ pub struct RenderPass {
     pub(crate) subpasses: Vec<Subpass>,
 }
 
-unsafe impl Send for RenderPass {}
-unsafe impl Sync for RenderPass {}
+#[derive(Debug)]
+pub enum FramebufferAttachment {
+    Texture(metal::Texture),
+    Drawable(Weak<metal::Drawable>),
+}
+
+unsafe impl Send for FramebufferAttachment {}
+unsafe impl Sync for FramebufferAttachment {}
+
+impl FramebufferAttachment {
+    pub fn as_texture(&self) -> &metal::TextureRef {
+        match *self {
+            FramebufferAttachment::Texture(ref texture) => texture,
+            FramebufferAttachment::Drawable(ref drawable) => unsafe {
+                let drawable = drawable.upgrade().unwrap();
+                msg_send![*drawable, texture]
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct Framebuffer {
     pub(crate) extent: image::Extent,
-    pub(crate) attachments: Vec<metal::Texture>,
+    pub(crate) attachments: Vec<FramebufferAttachment>,
 }
-
-unsafe impl Send for Framebuffer {}
-unsafe impl Sync for Framebuffer {}
 
 #[derive(Clone, Debug)]
 pub struct ResourceData<T> {
@@ -391,13 +406,22 @@ unsafe impl Send for BufferView {}
 unsafe impl Sync for BufferView {}
 
 #[derive(Debug)]
-pub struct ImageView {
-    pub(crate) raw: metal::Texture,
-    pub(crate) mtl_format: metal::MTLPixelFormat,
+pub enum ImageView {
+    Texture(metal::Texture, metal::MTLPixelFormat),
+    Drawable(Arc<metal::Drawable>),
 }
 
 unsafe impl Send for ImageView {}
 unsafe impl Sync for ImageView {}
+
+impl ImageView {
+    pub(crate) fn as_texture(&self) -> &metal::TextureRef {
+        match *self {
+            ImageView::Texture(ref texture, _) => texture,
+            ImageView::Drawable(_) => panic!("Invalid use of a surface image view!"),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct Sampler {

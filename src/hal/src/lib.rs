@@ -57,7 +57,6 @@ pub use self::window::{
     Swapchain,
     SwapchainConfig,
     SurfaceSwapchainConfig,
-    SwapchainImageId,
 };
 
 pub mod adapter;

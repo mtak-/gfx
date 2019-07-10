@@ -53,7 +53,7 @@ use std::{
     borrow::Borrow,
     io::Cursor,
     iter,
-    collections::hash_map::{Entry, HashMap},
+    mem,
 };
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -456,8 +456,6 @@ fn main() {
             .expect("Can't create render pass")
     };
 
-    let mut framebuffers = HashMap::new();
-
     // Define maximum number of frames we want to be able to be "in flight" (being computed
     // simultaneously) at once
     let frames_in_flight = 3;
@@ -475,6 +473,7 @@ fn main() {
     // though.
     let mut cmd_pools = Vec::with_capacity(frames_in_flight);
     let mut cmd_buffers = Vec::with_capacity(frames_in_flight);
+    let mut framebuffers = Vec::with_capacity(frames_in_flight);
 
     cmd_pools.push(command_pool);
     for _ in 1 .. frames_in_flight {
@@ -660,35 +659,29 @@ fn main() {
             viewport.rect.w = resize_dims.width as _;
             viewport.rect.h = resize_dims.height as _;
             recreate_swapchain = false;
-            framebuffers.clear();
         }
 
-        let (surface_image, unique_id) = match unsafe { surface.acquire_image(!0) } {
-            Ok((image, id, _)) => (image, id),
+        let surface_image = match unsafe { surface.acquire_image(!0) } {
+            Ok((image,  _)) => image,
             Err(_) => {
                 recreate_swapchain = true;
                 continue;
             }
         };
-        let framebuffer = match framebuffers.entry(unique_id) {
-            Entry::Occupied(e) => e.into_mut(),
-            Entry::Vacant(e) => unsafe {
-                let framebuffer = device
-                    .create_framebuffer(
-                        &render_pass,
-                        iter::once(surface_image.borrow()),
-                        resize_dims.to_extent(),
-                    )
-                    .unwrap();
-                e.insert(framebuffer)
-            }
+        let framebuffer = unsafe {
+            device
+                .create_framebuffer(
+                    &render_pass,
+                    iter::once(surface_image.borrow()),
+                    resize_dims.to_extent(),
+                )
+                .unwrap()
         };
 
         // Compute index into our resource ring buffers based on the frame number
         // and number of frames in flight. Pay close attention to where this index is needed
         // versus when the swapchain image index we got from acquire_image is needed.
         let frame_idx = frame as usize % frames_in_flight;
-
         // Wait for the fence of the previous submission of this frame and reset it; ensures we are
         // submitting only up to maximum number of frames_in_flight if we are submitting faster than
         // the gpu can keep up with. This would also guarantee that any resources which need to be
@@ -702,6 +695,13 @@ fn main() {
                 .reset_fence(&submission_complete_fences[frame_idx])
                 .expect("Failed to reset fence");
             cmd_pools[frame_idx].reset(false);
+
+            if framebuffers.len() == frame_idx {
+                framebuffers.push(framebuffer);
+            } else {
+                let old_framebuffer = mem::replace(&mut framebuffers[frame_idx], framebuffer);
+                device.destroy_framebuffer(old_framebuffer);
+            }
         }
 
         // Rendering
@@ -718,7 +718,7 @@ fn main() {
             {
                 let mut encoder = cmd_buffer.begin_render_pass_inline(
                     &render_pass,
-                    framebuffer,
+                    &framebuffers[frame_idx],
                     viewport.rect,
                     &[command::ClearValue::Color(command::ClearColor::Sfloat([
                         0.8, 0.8, 0.8, 1.0,
@@ -735,7 +735,7 @@ fn main() {
 
             // present frame
             if let Err(_) = queue_group.queues[0].present_surface(
-                &surface,
+                &mut surface,
                 surface_image,
             ) {
                 recreate_swapchain = true;
@@ -762,15 +762,15 @@ fn main() {
         for f in submission_complete_fences {
             device.destroy_fence(f);
         }
+        for fbo in framebuffers {
+            device.destroy_framebuffer(fbo);
+        }
         device.destroy_render_pass(render_pass);
         device.free_memory(buffer_memory);
         device.free_memory(image_memory);
         device.free_memory(image_upload_memory);
         device.destroy_graphics_pipeline(pipeline);
         device.destroy_pipeline_layout(pipeline_layout);
-        for (_, framebuffer) in framebuffers {
-            device.destroy_framebuffer(framebuffer);
-        }
     }
 }
 

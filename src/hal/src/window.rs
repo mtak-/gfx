@@ -219,9 +219,8 @@ pub trait Surface<B: Backend>: fmt::Debug + Any + Send + Sync {
     ///
     /// ```
     unsafe fn acquire_image(
-        &mut self,
-        timeout_ns: u64,
-    ) -> Result<(Self::SwapchainImage, SwapchainImageId, Option<Suboptimal>), AcquireError>;
+        &mut self, timeout_ns: u64,
+    ) -> Result<(Self::SwapchainImage, Option<Suboptimal>), AcquireError>;
 }
 
 /// Index of an image in the swapchain.
@@ -586,11 +585,3 @@ impl SurfaceSwapchainConfig {
         self
     }
 }
-
-/// A unique ID associated with an image belonging to `AltSwapchain`. In normal operation,
-/// it would cycle through N consecutive numbers (e.g. 1-2-3-1-2-3-...). Occasionally,
-/// it may also increase to accomodate for the native backend behavior on surface resize,
-/// hide/show, fullscreen transition, etc.
-/// The client of `AltSwapchain` is expected to keep resources associated with some of the
-/// recently used `SwapchainImageId` values, most often `B::Framebuffer` objects.
-pub type SwapchainImageId = u64;

@@ -2306,16 +2306,17 @@ impl RawCommandQueue<Backend> for CommandQueue {
 
     unsafe fn present_surface(
         &mut self,
-        _surface: &window::Surface,
-        image: window::SurfaceImage,
+        surface: &mut window::Surface,
+        _image: window::SurfaceImage,
     ) -> Result<Option<Suboptimal>, PresentError> {
         let queue = self.shared.queue.lock();
+        let drawable = surface.take_drawable();
         autoreleasepool(|| {
             let command_buffer = queue.raw.new_command_buffer();
             command_buffer.set_label("present");
             self.record_empty(command_buffer);
 
-            command_buffer.present_drawable(&image.drawable);
+            command_buffer.present_drawable(&drawable);
             command_buffer.commit();
         });
         Ok(None)
@@ -3420,7 +3421,7 @@ impl com::RawCommandBuffer<Backend> for CommandBuffer {
 
                 for (i, &(at_id, op_flags)) in subpass.colors.iter().enumerate() {
                     let rat = &render_pass.attachments[at_id];
-                    let texture = &framebuffer.attachments[at_id];
+                    let texture = framebuffer.attachments[at_id].as_texture();
                     let desc = descriptor.color_attachments().object_at(i as _).unwrap();
 
                     combined_aspects |= Aspects::COLOR;
@@ -3441,7 +3442,7 @@ impl com::RawCommandBuffer<Backend> for CommandBuffer {
 
                 if let Some((at_id, op_flags)) = subpass.depth_stencil {
                     let rat = &render_pass.attachments[at_id];
-                    let texture = &framebuffer.attachments[at_id];
+                    let texture = framebuffer.attachments[at_id].as_texture();
                     let aspects = rat.format.unwrap().surface_desc().aspects;
                     combined_aspects |= aspects;
 

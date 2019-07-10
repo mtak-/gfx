@@ -90,7 +90,7 @@ pub trait RawCommandQueue<B: Backend>: fmt::Debug + Any + Send + Sync {
     /// Present the a
     unsafe fn present_surface(
         &mut self,
-        surface: &B::Surface,
+        surface: &mut B::Surface,
         image: <B::Surface as Surface<B>>::SwapchainImage,
     ) -> Result<Option<Suboptimal>, PresentError>;
 
@@ -182,7 +182,7 @@ impl<B: Backend, C: Capability> CommandQueue<B, C> {
     /// Presents the surface that is merged with a swapchain.
     pub unsafe fn present_surface(
         &mut self,
-        surface: &B::Surface,
+        surface: &mut B::Surface,
         image: <B::Surface as Surface<B>>::SwapchainImage,
     ) -> Result<Option<Suboptimal>, PresentError> {
         self.0.present_surface(surface, image)
