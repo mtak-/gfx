@@ -915,7 +915,7 @@ impl hal::PresentationSurface<Backend> for Surface {
     type SwapchainImage = ();
 
     unsafe fn configure_swapchain(
-        &mut self, _: &Device, _: hal::SurfaceSwapchainConfig
+        &mut self, _: &Device, _: hal::SwapchainConfig
     ) -> Result<(), hal::window::CreationError> {
         unimplemented!()
     }

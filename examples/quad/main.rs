@@ -46,7 +46,7 @@ use hal::{
     pso,
     window::Extent2D,
 };
-use hal::{DescriptorPool, Primitive, SurfaceSwapchainConfig};
+use hal::{DescriptorPool, Primitive, SwapchainConfig};
 use hal::{Device, Instance, PhysicalDevice, PresentationSurface, Surface};
 
 use std::{
@@ -425,7 +425,7 @@ fn main() {
         width: DIMS.width,
         height: DIMS.height,
     };
-    let swap_config = SurfaceSwapchainConfig::from_caps(&caps, format, resize_dims);
+    let swap_config = SwapchainConfig::from_caps(&caps, format, resize_dims);
     println!("{:?}", swap_config);
     unsafe {
         surface.configure_swapchain(&device, swap_config)
@@ -653,7 +653,7 @@ fn main() {
             // Verify that previous format still exists so we may reuse it.
             assert!(formats.iter().any(|fs| fs.contains(&format)));
 
-            let swap_config = SurfaceSwapchainConfig::from_caps(&caps, format, resize_dims);
+            let swap_config =SwapchainConfig::from_caps(&caps, format, resize_dims);
             println!("{:?}", swap_config);
             unsafe {
                 surface.configure_swapchain(&device, swap_config)

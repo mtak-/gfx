@@ -4,13 +4,13 @@ use crate::{
     native,
     Backend,
     QueueFamily,
+    Shared,
 };
 
 use hal::{
     format,
     image,
     SwapchainConfig,
-    SurfaceSwapchainConfig,
     CompositeAlpha,
     PresentMode,
     window::{CreationError, Extent2D, Suboptimal},
@@ -104,6 +104,48 @@ impl SurfaceInner {
             swapchain_format: metal::MTLPixelFormat::Invalid,
             main_thread_id: thread::current().id(),
         }
+    }
+
+    fn configure(&self, shared: &Shared, config: &SwapchainConfig) -> metal::MTLPixelFormat {
+        info!("build swapchain {:?}", config);
+
+        let caps = &shared.private_caps;
+        let mtl_format = caps
+            .map_format(config.format)
+            .expect("unsupported backbuffer format");
+
+        let render_layer_borrow = self.render_layer.lock();
+        let render_layer = *render_layer_borrow;
+        let framebuffer_only = config.image_usage == image::Usage::COLOR_ATTACHMENT;
+        let display_sync = config.present_mode != PresentMode::Immediate;
+        let is_mac = caps.os_is_mac;
+        let can_set_next_drawable_timeout = if is_mac {
+            caps.has_version_at_least(10, 13)
+        } else {
+            caps.has_version_at_least(11, 0)
+        };
+        let can_set_display_sync = is_mac && caps.has_version_at_least(10, 13);
+        let drawable_size = CGSize::new(config.extent.width as f64, config.extent.height as f64);
+
+        let device_raw = shared.device.lock().as_ptr();
+        unsafe {
+            msg_send![render_layer, setDevice: device_raw];
+            msg_send![render_layer, setPixelFormat: mtl_format];
+            msg_send![render_layer, setFramebufferOnly: framebuffer_only];
+
+            // this gets ignored on iOS for certain OS/device combinations (iphone5s iOS 10.3)
+            msg_send![render_layer, setMaximumDrawableCount: config.image_count as u64];
+
+            msg_send![render_layer, setDrawableSize: drawable_size];
+            if can_set_next_drawable_timeout {
+                msg_send![render_layer, setAllowsNextDrawableTimeout:false];
+            }
+            if can_set_display_sync {
+                msg_send![render_layer, setDisplaySyncEnabled: display_sync];
+            }
+        };
+
+        mtl_format
     }
 
     fn next_frame<'a>(
@@ -406,43 +448,10 @@ impl hal::PresentationSurface<Backend> for Surface {
 
     /// Set up the swapchain associated with the surface to have the given format.
     unsafe fn configure_swapchain(
-        &mut self, device: &Device, config: SurfaceSwapchainConfig
+        &mut self, device: &Device, config: SwapchainConfig
     ) -> Result<(), CreationError> {
-        info!("configure_swapchain {:?}", config);
-
-        let caps = &device.shared.private_caps;
-        let mtl_format = caps
-            .map_format(config.format)
-            .expect("unsupported backbuffer format");
-        self.swapchain_format = mtl_format;
-        let drawable_size = CGSize::new(config.extent.width as f64, config.extent.height as f64);
-
-        let render_layer_borrow = self.inner.render_layer.lock();
-        let render_layer = *render_layer_borrow;
-        let framebuffer_only = true;
-        let display_sync = config.present_mode != PresentMode::Immediate;
-        let is_mac = caps.os_is_mac;
-        let can_set_next_drawable_timeout = if is_mac {
-            caps.has_version_at_least(10, 13)
-        } else {
-            caps.has_version_at_least(11, 0)
-        };
-        let can_set_display_sync = is_mac && caps.has_version_at_least(10, 13);
-        let device_raw = device.shared.device.lock().as_ptr();
-
-        msg_send![render_layer, setDevice: device_raw];
-        msg_send![render_layer, setPixelFormat: mtl_format];
-        msg_send![render_layer, setFramebufferOnly: framebuffer_only];
-        // this gets ignored on iOS for certain OS/device combinations (iphone5s iOS 10.3)
-        msg_send![render_layer, setMaximumDrawableCount: config.image_count as u64];
-        msg_send![render_layer, setDrawableSize: drawable_size];
-        if can_set_next_drawable_timeout {
-            msg_send![render_layer, setAllowsNextDrawableTimeout:false];
-        }
-        if can_set_display_sync {
-            msg_send![render_layer, setDisplaySyncEnabled: display_sync];
-        }
-
+        assert!(image::Usage::COLOR_ATTACHMENT.contains(config.image_usage));
+        self.swapchain_format = self.inner.configure(&device.shared, &config);
         Ok(())
     }
 
@@ -489,56 +498,22 @@ impl Device {
         config: SwapchainConfig,
         old_swapchain: Option<Swapchain>,
     ) -> (Swapchain, Vec<native::Image>) {
-        info!("build_swapchain {:?}", config);
         if let Some(ref sc) = old_swapchain {
             sc.clear_drawables();
         }
 
-        let caps = &self.shared.private_caps;
-        let mtl_format = caps
-            .map_format(config.format)
-            .expect("unsupported backbuffer format");
-
-        let render_layer_borrow = surface.inner.render_layer.lock();
-        let render_layer = *render_layer_borrow;
-        let format_desc = config.format.surface_desc();
-        let framebuffer_only = config.image_usage == image::Usage::COLOR_ATTACHMENT;
-        let display_sync = config.present_mode != PresentMode::Immediate;
-        let is_mac = caps.os_is_mac;
-        let can_set_next_drawable_timeout = if is_mac {
-            caps.has_version_at_least(10, 13)
-        } else {
-            caps.has_version_at_least(11, 0)
-        };
-        let can_set_display_sync = is_mac && caps.has_version_at_least(10, 13);
-        let drawable_size = CGSize::new(config.extent.width as f64, config.extent.height as f64);
+        let mtl_format = surface.inner.configure(&self.shared, &config);
 
         let cmd_queue = self.shared.queue.lock();
-
-        unsafe {
-            let device_raw = self.shared.device.lock().as_ptr();
-            msg_send![render_layer, setDevice: device_raw];
-            msg_send![render_layer, setPixelFormat: mtl_format];
-            msg_send![render_layer, setFramebufferOnly: framebuffer_only];
-
-            // this gets ignored on iOS for certain OS/device combinations (iphone5s iOS 10.3)
-            msg_send![render_layer, setMaximumDrawableCount: config.image_count as u64];
-
-            msg_send![render_layer, setDrawableSize: drawable_size];
-            if can_set_next_drawable_timeout {
-                msg_send![render_layer, setAllowsNextDrawableTimeout:false];
-            }
-            if can_set_display_sync {
-                msg_send![render_layer, setDisplaySyncEnabled: display_sync];
-            }
-        };
+        let format_desc = config.format.surface_desc();
+        let render_layer_borrow = surface.inner.render_layer.lock();
 
         let frames = (0 .. config.image_count)
             .map(|index| {
                 autoreleasepool(|| {
                     // for the drawable & texture
                     let (drawable, texture) = unsafe {
-                        let drawable: &metal::DrawableRef = msg_send![render_layer, nextDrawable];
+                        let drawable: &metal::DrawableRef = msg_send![*render_layer_borrow, nextDrawable];
                         assert!(!drawable.as_ptr().is_null());
                         let texture: &metal::TextureRef = msg_send![drawable, texture];
                         (drawable, texture)
