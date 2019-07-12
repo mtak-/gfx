@@ -330,8 +330,6 @@ impl Borrow<native::ImageView> for SurfaceImage {
 }
 
 impl hal::Surface<Backend> for Surface {
-    type SwapchainImage = SurfaceImage;
-
     fn supports_queue_family(&self, _queue_family: &QueueFamily) -> bool {
         // we only expose one family atm, so it's compatible
         true
@@ -401,8 +399,12 @@ impl hal::Surface<Backend> for Surface {
 
         (caps, Some(formats), present_modes)
     }
+}
 
-        /// Set up the swapchain associated with the surface to have the given format.
+impl hal::PresentationSurface<Backend> for Surface {
+    type SwapchainImage = SurfaceImage;
+
+    /// Set up the swapchain associated with the surface to have the given format.
     unsafe fn configure_swapchain(
         &mut self, device: &Device, config: SurfaceSwapchainConfig
     ) -> Result<(), CreationError> {

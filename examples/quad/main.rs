@@ -47,7 +47,7 @@ use hal::{
     window::Extent2D,
 };
 use hal::{DescriptorPool, Primitive, SurfaceSwapchainConfig};
-use hal::{Device, Instance, PhysicalDevice, Surface};
+use hal::{Device, Instance, PhysicalDevice, PresentationSurface, Surface};
 
 use std::{
     borrow::Borrow,

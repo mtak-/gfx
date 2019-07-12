@@ -18,7 +18,7 @@ use std::marker::PhantomData;
 use crate::command::{Primary, Submittable};
 use crate::error::HostExecutionError;
 use crate::pso;
-use crate::window::{PresentError, Suboptimal, Surface, SwapImageIndex};
+use crate::window::{PresentError, PresentationSurface, Suboptimal, SwapImageIndex};
 use crate::Backend;
 
 pub use self::capability::{Capability, Compute, General, Graphics, Supports, Transfer};
@@ -91,7 +91,7 @@ pub trait RawCommandQueue<B: Backend>: fmt::Debug + Any + Send + Sync {
     unsafe fn present_surface(
         &mut self,
         surface: &mut B::Surface,
-        image: <B::Surface as Surface<B>>::SwapchainImage,
+        image: <B::Surface as PresentationSurface<B>>::SwapchainImage,
     ) -> Result<Option<Suboptimal>, PresentError>;
 
     /// Wait for the queue to idle.
@@ -183,7 +183,7 @@ impl<B: Backend, C: Capability> CommandQueue<B, C> {
     pub unsafe fn present_surface(
         &mut self,
         surface: &mut B::Surface,
-        image: <B::Surface as Surface<B>>::SwapchainImage,
+        image: <B::Surface as PresentationSurface<B>>::SwapchainImage,
     ) -> Result<Option<Suboptimal>, PresentError> {
         self.0.present_surface(surface, image)
     }

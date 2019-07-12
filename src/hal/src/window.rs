@@ -170,12 +170,8 @@ pub struct SurfaceCapabilities {
     pub composite_alpha: CompositeAlpha,
 }
 
-/// A `Surface` abstracts the surface of a native window, which will be presented
-/// on the display.
+/// A `Surface` abstracts the surface of a native window.
 pub trait Surface<B: Backend>: fmt::Debug + Any + Send + Sync {
-    /// An opaque type wrapping the swapchain image.
-    type SwapchainImage: Borrow<B::ImageView> + fmt::Debug + Send + Sync;
-
     /// Check if the queue family supports presentation to this surface.
     ///
     /// # Examples
@@ -196,6 +192,13 @@ pub trait Surface<B: Backend>: fmt::Debug + Any + Send + Sync {
         &self,
         physical_device: &B::PhysicalDevice,
     ) -> (SurfaceCapabilities, Option<Vec<Format>>, Vec<PresentMode>);
+}
+
+/// A surface trait that exposes the ability to present images on the
+/// associtated swap chain.
+pub trait PresentationSurface<B: Backend>: Surface<B> {
+    /// An opaque type wrapping the swapchain image.
+    type SwapchainImage: Borrow<B::ImageView> + fmt::Debug + Send + Sync;
 
     /// Set up the swapchain associated with the surface to have the given format.
     unsafe fn configure_swapchain(

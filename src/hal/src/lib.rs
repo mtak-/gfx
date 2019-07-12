@@ -51,6 +51,7 @@ pub use self::window::{
     AcquireError,
     CompositeAlpha,
     PresentMode,
+    PresentationSurface,
     Surface,
     SurfaceCapabilities,
     SwapImageIndex,
@@ -495,7 +496,7 @@ pub trait Backend: 'static + Sized + Eq + Clone + Hash + fmt::Debug + Any + Send
     type PhysicalDevice: PhysicalDevice<Self>;
     type Device: Device<Self>;
 
-    type Surface: Surface<Self>;
+    type Surface: PresentationSurface<Self>;
     type Swapchain: Swapchain<Self>;
 
     type QueueFamily: QueueFamily;

@@ -910,14 +910,15 @@ impl hal::Surface<Backend> for Surface {
     fn supports_queue_family(&self, _: &QueueFamily) -> bool {
         unimplemented!()
     }
+}
+impl hal::PresentationSurface<Backend> for Surface {
+    type SwapchainImage = ();
 
     unsafe fn configure_swapchain(
         &mut self, _: &Device, _: hal::SurfaceSwapchainConfig
     ) -> Result<(), hal::window::CreationError> {
         unimplemented!()
     }
-
-    type SwapchainImage = ();
 
     unsafe fn acquire_image(
         &mut self,
