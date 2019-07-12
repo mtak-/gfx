@@ -415,8 +415,7 @@ impl hal::PresentationSurface<Backend> for Surface {
             .map_format(config.format)
             .expect("unsupported backbuffer format");
         self.swapchain_format = mtl_format;
-        let dims = self.inner.dimensions();
-        let drawable_size = CGSize::new(dims.width as f64, dims.height as f64);
+        let drawable_size = CGSize::new(config.extent.width as f64, config.extent.height as f64);
 
         let render_layer_borrow = self.inner.render_layer.lock();
         let render_layer = *render_layer_borrow;

@@ -421,7 +421,11 @@ fn main() {
             .unwrap_or(formats[0])
     });
 
-    let swap_config = SurfaceSwapchainConfig::from_caps(&caps, format);
+    let mut resize_dims = Extent2D {
+        width: DIMS.width,
+        height: DIMS.height,
+    };
+    let swap_config = SurfaceSwapchainConfig::from_caps(&caps, format, resize_dims);
     println!("{:?}", swap_config);
     unsafe {
         surface.configure_swapchain(&device, swap_config)
@@ -607,10 +611,6 @@ fn main() {
     //
     let mut running = true;
     let mut recreate_swapchain = false;
-    let mut resize_dims = Extent2D {
-        width: DIMS.width,
-        height: DIMS.height,
-    };
     let mut frame: u64 = 0;
     while running {
         running = !cfg!(target_arch = "wasm32");
@@ -653,7 +653,7 @@ fn main() {
             // Verify that previous format still exists so we may reuse it.
             assert!(formats.iter().any(|fs| fs.contains(&format)));
 
-            let swap_config = SurfaceSwapchainConfig::from_caps(&caps, format);
+            let swap_config = SurfaceSwapchainConfig::from_caps(&caps, format, resize_dims);
             println!("{:?}", swap_config);
             unsafe {
                 surface.configure_swapchain(&device, swap_config)

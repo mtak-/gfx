@@ -170,6 +170,24 @@ pub struct SurfaceCapabilities {
     pub composite_alpha: CompositeAlpha,
 }
 
+impl SurfaceCapabilities {
+    fn clamped_extent(&self, default_extent: Extent2D) -> Extent2D {
+        match self.current_extent {
+            Some(current) => current,
+            None => {
+                let (min_width, max_width) = (self.extents.start().width, self.extents.end().width);
+                let (min_height, max_height) = (self.extents.start().height, self.extents.end().height);
+
+                // clamp the default_extent to within the allowed surface sizes
+                let width = min(max_width, max(default_extent.width, min_width));
+                let height = min(max_height, max(default_extent.height, min_height));
+
+                Extent2D { width, height }
+            }
+        }
+    }
+}
+
 /// A `Surface` abstracts the surface of a native window.
 pub trait Surface<B: Backend>: fmt::Debug + Any + Send + Sync {
     /// Check if the queue family supports presentation to this surface.
@@ -336,20 +354,6 @@ impl SwapchainConfig {
     /// returned from a physical device query. If the surface does not
     /// specify a current size, default_extent is clamped and used instead.
     pub fn from_caps(caps: &SurfaceCapabilities, format: Format, default_extent: Extent2D) -> Self {
-        let clamped_extent = match caps.current_extent {
-            Some(current) => current,
-            None => {
-                let (min_width, max_width) = (caps.extents.start().width, caps.extents.end().width);
-                let (min_height, max_height) = (caps.extents.start().height, caps.extents.end().height);
-
-                // clamp the default_extent to within the allowed surface sizes
-                let width = min(max_width, max(default_extent.width, min_width));
-                let height = min(max_height, max(default_extent.height, min_height));
-
-                Extent2D { width, height }
-            }
-        };
-
         let composite_alpha = if caps.composite_alpha.contains(CompositeAlpha::INHERIT) {
             CompositeAlpha::INHERIT
         } else if caps.composite_alpha.contains(CompositeAlpha::OPAQUE) {
@@ -362,7 +366,7 @@ impl SwapchainConfig {
             present_mode: PresentMode::Fifo,
             composite_alpha,
             format,
-            extent: clamped_extent,
+            extent: caps.clamped_extent(default_extent),
             image_count: *caps.image_count.start(),
             image_layers: 1,
             image_usage: image::Usage::COLOR_ATTACHMENT,
@@ -520,7 +524,7 @@ pub trait Swapchain<B: Backend>: fmt::Debug + Any + Send + Sync {
 /// # fn main() {
 /// # use gfx_hal::{SurfaceSwapchainConfig};
 /// # use gfx_hal::format::Format;
-/// let config = SurfaceSwapchainConfig::new(Format::Bgra8Unorm, 2);
+/// let config = SurfaceSwapchainConfig::new(10, 10, Format::Bgra8Unorm, 2);
 /// # }
 /// ```
 #[derive(Debug, Clone)]
@@ -531,6 +535,9 @@ pub struct SurfaceSwapchainConfig {
     pub composite_alpha: CompositeAlpha,
     /// Format of the backbuffer images.
     pub format: Format,
+    /// Requested image extent. Must be in
+    /// `SurfaceCapabilities::extents` range.
+    pub extent: Extent2D,
     /// Number of images in the swapchain. Must be in
     /// `SurfaceCapabilities::image_count` range.
     pub image_count: SwapImageIndex,
@@ -544,11 +551,12 @@ impl SurfaceSwapchainConfig {
     /// ```no_run
     ///
     /// ```
-    pub fn new(format: Format, image_count: SwapImageIndex) -> Self {
+    pub fn new(width: u32, height: u32, format: Format, image_count: SwapImageIndex) -> Self {
         SurfaceSwapchainConfig {
             present_mode: PresentMode::Fifo,
             composite_alpha: CompositeAlpha::OPAQUE,
             format,
+            extent: Extent2D { width, height },
             image_count,
         }
     }
@@ -556,7 +564,7 @@ impl SurfaceSwapchainConfig {
     /// Create a swapchain configuration based on the capabilities
     /// returned from a physical device query. If the surface does not
     /// specify a current size, default_extent is clamped and used instead.
-    pub fn from_caps(caps: &SurfaceCapabilities, format: Format) -> Self {
+    pub fn from_caps(caps: &SurfaceCapabilities, format: Format, default_extent: Extent2D) -> Self {
         let composite_alpha = if caps.composite_alpha.contains(CompositeAlpha::INHERIT) {
             CompositeAlpha::INHERIT
         } else if caps.composite_alpha.contains(CompositeAlpha::OPAQUE) {
@@ -569,7 +577,8 @@ impl SurfaceSwapchainConfig {
             present_mode: PresentMode::Fifo,
             composite_alpha,
             format,
-            image_count: caps.image_count.start,
+            extent: caps.clamped_extent(default_extent),
+            image_count: *caps.image_count.start(),
         }
     }
 
