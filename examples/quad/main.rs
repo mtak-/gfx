@@ -101,13 +101,17 @@ fn main() {
 
     #[cfg(not(target_arch = "wasm32"))]
     let mut events_loop = winit::EventsLoop::new();
-
+    #[cfg(not(target_arch = "wasm32"))]
+    let dpi = events_loop.get_primary_monitor().get_hidpi_factor();
     #[cfg(not(target_arch = "wasm32"))]
     let wb = winit::WindowBuilder::new()
         .with_min_dimensions(winit::dpi::LogicalSize::new(1.0, 1.0))
-        .with_dimensions(winit::dpi::LogicalSize::new(
-            DIMS.width as _,
-            DIMS.height as _,
+        .with_dimensions(winit::dpi::LogicalSize::from_physical(
+            winit::dpi::PhysicalSize::new(
+                DIMS.width as _,
+                DIMS.height as _,
+            ),
+            dpi,
         ))
         .with_title("quad".to_string());
     // instantiate backend
@@ -632,8 +636,8 @@ fn main() {
                             context.resize(dims.to_physical(window.get_hidpi_factor()));
                         }
                         recreate_swapchain = true;
-                        resize_dims.width = dims.width as u32;
-                        resize_dims.height = dims.height as u32;
+                        resize_dims.width = (dims.width * dpi) as u32;
+                        resize_dims.height = (dims.height * dpi) as u32;
                     }
                     _ => (),
                 }

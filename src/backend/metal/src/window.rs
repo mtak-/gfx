@@ -332,11 +332,6 @@ impl Borrow<native::ImageView> for SurfaceImage {
 impl hal::Surface<Backend> for Surface {
     type SwapchainImage = SurfaceImage;
 
-    fn kind(&self) -> image::Kind {
-        let ex = self.inner.dimensions();
-        image::Kind::D2(ex.width, ex.height, 1, 1)
-    }
-
     fn supports_queue_family(&self, _queue_family: &QueueFamily) -> bool {
         // we only expose one family atm, so it's compatible
         true
@@ -418,6 +413,8 @@ impl hal::Surface<Backend> for Surface {
             .map_format(config.format)
             .expect("unsupported backbuffer format");
         self.swapchain_format = mtl_format;
+        let dims = self.inner.dimensions();
+        let drawable_size = CGSize::new(dims.width as f64, dims.height as f64);
 
         let render_layer_borrow = self.inner.render_layer.lock();
         let render_layer = *render_layer_borrow;
@@ -430,19 +427,13 @@ impl hal::Surface<Backend> for Surface {
             caps.has_version_at_least(11, 0)
         };
         let can_set_display_sync = is_mac && caps.has_version_at_least(10, 13);
-        let drawable_size = {
-            let bounds: CGRect = msg_send![render_layer, bounds];
-            bounds.size
-        };
-
         let device_raw = device.shared.device.lock().as_ptr();
+
         msg_send![render_layer, setDevice: device_raw];
         msg_send![render_layer, setPixelFormat: mtl_format];
         msg_send![render_layer, setFramebufferOnly: framebuffer_only];
-
         // this gets ignored on iOS for certain OS/device combinations (iphone5s iOS 10.3)
         msg_send![render_layer, setMaximumDrawableCount: config.image_count as u64];
-
         msg_send![render_layer, setDrawableSize: drawable_size];
         if can_set_next_drawable_timeout {
             msg_send![render_layer, setAllowsNextDrawableTimeout:false];
