@@ -176,9 +176,6 @@ pub trait Surface<B: Backend>: fmt::Debug + Any + Send + Sync {
     /// An opaque type wrapping the swapchain image.
     type SwapchainImage: Borrow<B::ImageView> + fmt::Debug + Send + Sync;
 
-    /// Retrieve the surface image kind.
-    fn kind(&self) -> image::Kind;
-
     /// Check if the queue family supports presentation to this surface.
     ///
     /// # Examples
