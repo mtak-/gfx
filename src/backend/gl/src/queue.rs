@@ -1128,6 +1128,18 @@ impl hal::queue::RawCommandQueue<Backend> for CommandQueue {
         Ok(None)
     }
 
+    #[cfg(any(feature = "glutin", feature = "wgl", target_arch = "wasm32"))]
+    unsafe fn present_surface(
+        &mut self,
+        surface: &mut crate::Surface,
+        _image: crate::SurfaceImage,
+    ) -> Result<Option<hal::window::Suboptimal>, hal::window::PresentError> {
+        #[cfg(all(feature = "glutin", not(target_arch = "wasm32")))]
+        surface.context.swap_buffers().unwrap();
+
+        Ok(None)
+    }
+
     fn wait_idle(&self) -> Result<(), error::HostExecutionError> {
         unsafe {
             self.share.context.finish();

@@ -34,7 +34,7 @@ mod state;
 mod window;
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "glutin"))]
-pub use window::glutin::{config_context, Headless, Surface, Swapchain};
+pub use crate::window::glutin::{config_context, Headless, Surface, Swapchain, SurfaceImage};
 #[cfg(target_arch = "wasm32")]
 pub use window::web::{Surface, Swapchain, Window};
 

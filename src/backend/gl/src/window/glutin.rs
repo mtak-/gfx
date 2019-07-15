@@ -45,12 +45,12 @@
 //! ```
 
 use crate::hal::window::Extent2D;
-use crate::hal::{self, format as f, image, memory, CompositeAlpha};
+use crate::hal::{self, format as f, image, CompositeAlpha};
 use crate::{native, Backend as B, Device, GlContainer, PhysicalDevice, QueueFamily, Starc};
 
-use glow::Context;
-
 use glutin;
+
+use std::borrow::Borrow;
 
 fn get_window_extent(window: &glutin::Window) -> image::Extent {
     let px = window
@@ -121,6 +121,37 @@ impl Surface {
             (24, 8, false) => vec![f::Format::Rgba8Unorm, f::Format::Bgra8Unorm],
             _ => vec![],
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct SurfaceImage {
+    view: native::ImageView,
+}
+
+impl Borrow<native::ImageView> for SurfaceImage {
+    fn borrow(&self) -> &native::ImageView {
+        &self.view
+    }
+}
+
+impl hal::PresentationSurface<B> for Surface {
+    type SwapchainImage = SurfaceImage;
+
+    unsafe fn configure_swapchain(
+        &mut self, _device: &Device, _config: hal::SwapchainConfig
+    ) -> Result<(), hal::window::CreationError> {
+        Ok(())
+    }
+
+    unsafe fn acquire_image(
+        &mut self,
+        _timeout_ns: u64,
+    ) -> Result<(Self::SwapchainImage, Option<hal::window::Suboptimal>), hal::AcquireError> {
+        let image = SurfaceImage {
+            view: native::ImageView::Surface(0),
+        };
+        Ok((image, None))
     }
 }
 

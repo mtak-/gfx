@@ -446,7 +446,6 @@ impl hal::Surface<Backend> for Surface {
 impl hal::PresentationSurface<Backend> for Surface {
     type SwapchainImage = SurfaceImage;
 
-    /// Set up the swapchain associated with the surface to have the given format.
     unsafe fn configure_swapchain(
         &mut self, device: &Device, config: SwapchainConfig
     ) -> Result<(), CreationError> {
@@ -455,19 +454,6 @@ impl hal::PresentationSurface<Backend> for Surface {
         Ok(())
     }
 
-    /// Acquire a new swapchain image for rendering.
-    ///
-    /// May fail according to one of the reasons indicated in `AcquireError` enum.
-    ///
-    /// # Synchronization
-    ///
-    /// The acquired image is available to render. No synchronization is required.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    ///
-    /// ```
     unsafe fn acquire_image(
         &mut self,
         _timeout_ns: u64, //TODO: use the timeout
