@@ -1210,6 +1210,55 @@ impl hal::queue::RawCommandQueue<Backend> for CommandQueue {
         }
     }
 
+    unsafe fn present_surface(
+        &mut self,
+        surface: &mut window::Surface,
+        image: window::SurfaceImage,
+    ) -> Result<Option<Suboptimal>, PresentError> {
+        let ssc = surface.swapchain.as_ref().unwrap();
+        let submit_info = vk::SubmitInfo {
+            s_type: vk::StructureType::SUBMIT_INFO,
+            p_next: ptr::null(),
+            wait_semaphore_count: 0,
+            p_wait_semaphores: ptr::null(),
+            p_wait_dst_stage_mask: ptr::null(),
+            command_buffer_count: 0,
+            p_command_buffers: ptr::null(),
+            signal_semaphore_count: 1,
+            p_signal_semaphores: &ssc.semaphore.0,
+        };
+        self.device.0
+            .queue_submit(*self.raw, &[submit_info], vk::Fence::null())
+            .unwrap();
+
+
+        let present_info = vk::PresentInfoKHR {
+            s_type: vk::StructureType::PRESENT_INFO_KHR,
+            p_next: ptr::null(),
+            wait_semaphore_count: 1,
+            p_wait_semaphores: &ssc.semaphore.0,
+            swapchain_count: 1,
+            p_swapchains: &ssc.swapchain.raw,
+            p_image_indices: &image.index,
+            p_results: ptr::null_mut(),
+        };
+
+        match self.swapchain_fn.queue_present_khr(*self.raw, &present_info) {
+            vk::Result::SUCCESS => Ok(None),
+            vk::Result::SUBOPTIMAL_KHR => Ok(Some(Suboptimal)),
+            vk::Result::ERROR_OUT_OF_HOST_MEMORY => {
+                Err(PresentError::OutOfMemory(OutOfMemory::OutOfHostMemory))
+            }
+            vk::Result::ERROR_OUT_OF_DEVICE_MEMORY => {
+                Err(PresentError::OutOfMemory(OutOfMemory::OutOfDeviceMemory))
+            }
+            vk::Result::ERROR_DEVICE_LOST => Err(PresentError::DeviceLost(DeviceLost)),
+            vk::Result::ERROR_OUT_OF_DATE_KHR => Err(PresentError::OutOfDate),
+            vk::Result::ERROR_SURFACE_LOST_KHR => Err(PresentError::SurfaceLost(SurfaceLost)),
+            _ => panic!("Failed to present frame"),
+        }
+    }
+
     fn wait_idle(&self) -> Result<(), HostExecutionError> {
         unsafe {
             self.device

@@ -1,6 +1,8 @@
+use std::borrow::Borrow;
 use std::os::raw::c_void;
 use std::ptr;
 use std::sync::Arc;
+use std::time::Instant;
 
 use ash::extensions::khr;
 use ash::vk;
@@ -8,11 +10,21 @@ use ash::vk;
 use crate::hal;
 use crate::hal::format::Format;
 
+use crate::{conv, native};
+use crate::{Backend, Instance, Device, PhysicalDevice, QueueFamily, RawDevice, RawInstance, VK_ENTRY};
+
 #[cfg(feature = "winit")]
 use winit;
 
-use crate::{conv, native};
-use crate::{Backend, Instance, PhysicalDevice, QueueFamily, RawInstance, VK_ENTRY};
+
+#[derive(Debug)]
+pub struct SurfaceSwapchain {
+    pub(crate) swapchain: Swapchain,
+    device: Arc<RawDevice>,
+    fence: native::Fence,
+    pub(crate) semaphore: native::Semaphore,
+    views: Arc<Vec<native::ImageView>>,
+}
 
 #[derive(Derivative)]
 #[derivative(Debug)]
@@ -21,6 +33,26 @@ pub struct Surface {
     // For vkDestroySurfaceKHR: Host access to surface must be externally synchronized
     #[derivative(Debug = "ignore")]
     pub(crate) raw: Arc<RawSurface>,
+
+    pub(crate) swapchain: Option<SurfaceSwapchain>,
+    stale_views: Vec<(Arc<RawDevice>, native::Semaphore, Arc<Vec<native::ImageView>>)>,
+}
+
+impl Surface {
+    fn clear_stale_views(&mut self) {
+        use ash::version::DeviceV1_0;
+        for &mut (ref device, ref semaphore, ref mut views) in self.stale_views.iter_mut() {
+            if let Some(vec) = Arc::get_mut(views) {
+                unsafe {
+                    device.0.destroy_semaphore(semaphore.0, None);
+                    for view in vec.drain(..) {
+                        device.0.destroy_image_view(view.view, None);
+                    }
+                }
+            }
+        }
+        self.stale_views.retain(|sv| !sv.2.is_empty());
+    }
 }
 
 pub struct RawSurface {
@@ -323,6 +355,8 @@ impl Instance {
 
         Surface {
             raw,
+            swapchain: None,
+            stale_views: Vec::new(),
         }
     }
 }
@@ -426,6 +460,125 @@ impl hal::Surface<Backend> for Surface {
         }
     }
 }
+
+#[derive(Debug)]
+pub struct SurfaceImage {
+    pub(crate) index: hal::SwapImageIndex,
+    views: Arc<Vec<native::ImageView>>,
+}
+
+impl Borrow<native::ImageView> for SurfaceImage {
+    fn borrow(&self) -> &native::ImageView {
+        &self.views[self.index as usize]
+    }
+}
+
+impl hal::PresentationSurface<Backend> for Surface {
+    type SwapchainImage = SurfaceImage;
+
+    /// Set up the swapchain associated with the surface to have the given format.
+    unsafe fn configure_swapchain(
+        &mut self, device: &Device, config: hal::SwapchainConfig
+    ) -> Result<(), hal::window::CreationError> {
+        use ash::version::DeviceV1_0;
+        use hal::Device;
+
+        let format = config.format;
+        let old = match self.swapchain.take() {
+            Some(ssc) => {
+                ssc.device.0.destroy_fence(ssc.fence.0, None);
+                self.stale_views.push((ssc.device, ssc.semaphore, ssc.views));
+                Some(ssc.swapchain)
+            }
+            None => None,
+        };
+
+        let (swapchain, images) = device.create_swapchain(self, config, old)?;
+        self.swapchain = Some(SurfaceSwapchain {
+            swapchain,
+            device: Arc::clone(&device.raw),
+            fence: device.create_fence(false).unwrap(),
+            semaphore: device.create_semaphore().unwrap(),
+            views: Arc::new(images
+                .iter()
+                .map(|image| device
+                    .create_image_view(
+                        image,
+                        hal::image::ViewKind::D2,
+                        format,
+                        hal::format::Swizzle::NO,
+                        hal::image::SubresourceRange {
+                            aspects: hal::format::Aspects::COLOR,
+                            layers: 0 .. 1,
+                            levels: 0 .. 1,
+                        },
+                    )
+                    .unwrap()
+                )
+                .collect()
+            ),
+        });
+
+        Ok(())
+    }
+
+    /// Acquire a new swapchain image for rendering.
+    ///
+    /// May fail according to one of the reasons indicated in `AcquireError` enum.
+    ///
+    /// # Synchronization
+    ///
+    /// The acquired image is available to render. No synchronization is required.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    ///
+    /// ```
+    unsafe fn acquire_image(
+        &mut self,
+        mut timeout_ns: u64, //TODO: use the timeout
+    ) -> Result<(Self::SwapchainImage, Option<hal::window::Suboptimal>), hal::AcquireError> {
+        use ash::version::DeviceV1_0;
+        use hal::Swapchain as _;
+
+        self.clear_stale_views();
+
+        let ssc = self.swapchain.as_mut().unwrap();
+        let moment = Instant::now();
+        let (index, suboptimal) = ssc.swapchain.acquire_image(timeout_ns, None, Some(&ssc.fence))?;
+        timeout_ns -= moment.elapsed().as_nanos() as u64;
+        let fences = &[ssc.fence.0];
+
+        match ssc.device.0.wait_for_fences(fences, true, timeout_ns) {
+            Ok(()) => {
+                ssc.device.0.reset_fences(fences).unwrap();
+                let image = Self::SwapchainImage {
+                    index,
+                    views: Arc::clone(&ssc.views),
+                };
+                Ok((image, suboptimal))
+            },
+            Err(vk::Result::NOT_READY) => Err(hal::AcquireError::NotReady),
+            Err(vk::Result::TIMEOUT) => Err(hal::AcquireError::Timeout),
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => Err(hal::AcquireError::OutOfDate),
+            Err(vk::Result::ERROR_SURFACE_LOST_KHR) => {
+                Err(hal::AcquireError::SurfaceLost(hal::device::SurfaceLost))
+            }
+            Err(vk::Result::ERROR_OUT_OF_HOST_MEMORY) => Err(hal::AcquireError::OutOfMemory(
+                hal::device::OutOfMemory::OutOfHostMemory,
+            )),
+            Err(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY) => Err(hal::AcquireError::OutOfMemory(
+                hal::device::OutOfMemory::OutOfDeviceMemory,
+            )),
+            Err(vk::Result::ERROR_DEVICE_LOST) => {
+                Err(hal::AcquireError::DeviceLost(hal::device::DeviceLost))
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
 
 #[derive(Derivative)]
 #[derivative(Debug)]
