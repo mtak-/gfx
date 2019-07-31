@@ -34,17 +34,17 @@ mod state;
 mod window;
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "glutin"))]
-pub use crate::window::glutin::{config_context, Headless, Surface, Swapchain, SurfaceImage};
+pub use crate::window::glutin::{config_context, Headless, Surface, SurfaceImage, Swapchain};
 #[cfg(target_arch = "wasm32")]
-pub use window::web::{Surface, Swapchain, Window};
+pub use window::web::{Surface, SurfaceImage, Swapchain, Window};
 
 #[cfg(feature = "wgl")]
 pub use window::wgl::Instance;
 #[cfg(feature = "wgl")]
-use window::wgl::{DeviceContext, Surface, Swapchain};
+use window::wgl::{DeviceContext, Surface, SurfaceImage, Swapchain};
 
 #[cfg(not(any(target_arch = "wasm32", feature = "glutin", feature = "wgl")))]
-pub use window::dummy::{Surface, Swapchain};
+pub use window::dummy::{Surface, SurfaceImage, Swapchain};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use glow::native::Context as GlContext;

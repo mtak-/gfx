@@ -11,6 +11,7 @@ use hal::window::Extent2D;
 use hal::{self, format as f, image, CompositeAlpha};
 use hal::format::Format;
 
+use arrayvec::ArrayVec;
 use lazy_static::lazy_static;
 use winapi::shared::minwindef::*;
 use winapi::shared::windef::*;
@@ -180,6 +181,7 @@ impl Instance {
     pub fn create_surface_from_hwnd(&self, hwnd: *mut c_void) -> Surface {
         Surface {
             hwnd: hwnd as *mut _,
+            swapchain: None,
         }
     }
 
@@ -213,6 +215,7 @@ impl hal::Instance for Instance {
 #[derive(Debug)]
 pub struct Surface {
     pub(crate) hwnd: HWND,
+    pub(crate) swapchain: Option<Swapchain>,
 }
 
 // TODO: high -msiglreith
@@ -269,7 +272,7 @@ impl hal::Surface<Backend> for Surface {
 
 #[derive(Debug)]
 pub struct Swapchain {
-    pub(crate) fbos: Vec<native::RawFrameBuffer>,
+    pub(crate) fbos: ArrayVec<[native::RawFrameBuffer; 3]>,
     pub(crate) context: PresentContext,
     pub(crate) extent: Extent2D,
 }

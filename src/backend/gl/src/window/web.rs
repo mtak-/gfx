@@ -2,6 +2,8 @@ use crate::hal::window::Extent2D;
 use crate::hal::{self, format as f, image, CompositeAlpha};
 use crate::{native, Backend as B, GlContainer, PhysicalDevice, QueueFamily};
 
+use arrayvec::ArrayVec;
+
 
 struct PixelFormat {
     color_bits: u32,
@@ -43,7 +45,7 @@ impl Window {
 #[derive(Clone, Debug)]
 pub struct Swapchain {
     pub(crate) extent: Extent2D,
-    pub(crate) fbos: Vec<native::RawFrameBuffer>,
+    pub(crate) fbos: ArrayVec<[native::RawFrameBuffer; 3]>,
 }
 
 impl hal::Swapchain<B> for Swapchain {
@@ -59,11 +61,15 @@ impl hal::Swapchain<B> for Swapchain {
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct Surface;
+pub struct Surface {
+    pub(crate) swapchain: Option<Swapchain>,
+}
 
 impl Surface {
     pub fn from_window(_window: &Window) -> Self {
-        Surface
+        Surface {
+            swapchain: None,
+        }
     }
 
     fn swapchain_formats(&self) -> Vec<f::Format> {

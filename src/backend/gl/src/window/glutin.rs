@@ -44,15 +44,26 @@
 //! }
 //! ```
 
-use crate::hal::window::Extent2D;
-use crate::hal::{self, format as f, image, CompositeAlpha};
-use crate::{native, Backend as B, Device, GlContainer, PhysicalDevice, QueueFamily, Starc};
+use crate::{
+    conv,
+    native,
+    Backend as B, Device, GlContainer, PhysicalDevice, QueueFamily, Starc,
+};
 
+use arrayvec::ArrayVec;
+use glow::Context as _;
 use glutin;
+use hal::{
+    self,
+    format as f,
+    image,
+    window::Extent2D,
+    CompositeAlpha,
+};
 
-use std::borrow::Borrow;
+use std::{borrow::Borrow, iter};
 
-fn get_window_extent(window: &glutin::Window) -> image::Extent {
+fn _get_window_extent(window: &glutin::Window) -> image::Extent {
     let px = window
         .get_inner_size()
         .unwrap()
@@ -71,7 +82,7 @@ pub struct Swapchain {
     // Extent because the window lies
     pub(crate) extent: Extent2D,
     ///
-    pub(crate) fbos: Vec<native::RawFrameBuffer>,
+    pub(crate) fbos: ArrayVec<[native::RawFrameBuffer; 3]>,
 }
 
 impl hal::Swapchain<B> for Swapchain {
@@ -89,20 +100,20 @@ impl hal::Swapchain<B> for Swapchain {
 //TODO: if we make `Surface` a `WindowBuilder` instead of `RawContext`,
 // we could spawn window + GL context when a swapchain is requested
 // and actually respect the swapchain configuration provided by the user.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Surface {
     pub(crate) context: Starc<glutin::RawContext<glutin::PossiblyCurrent>>,
+    pub(crate) swapchain: Option<Swapchain>,
+    renderbuffer: Option<native::Renderbuffer>,
 }
 
 impl Surface {
     pub fn from_context(context: glutin::RawContext<glutin::PossiblyCurrent>) -> Self {
         Surface {
+            renderbuffer: None,
+            swapchain: None,
             context: Starc::new(context),
         }
-    }
-
-    pub fn get_context(&self) -> &glutin::RawContext<glutin::PossiblyCurrent> {
-        &*self.context
     }
 
     pub fn context(&self) -> &glutin::RawContext<glutin::PossiblyCurrent> {
@@ -139,8 +150,39 @@ impl hal::PresentationSurface<B> for Surface {
     type SwapchainImage = SurfaceImage;
 
     unsafe fn configure_swapchain(
-        &mut self, _device: &Device, _config: hal::SwapchainConfig
+        &mut self, device: &Device, config: hal::SwapchainConfig
     ) -> Result<(), hal::window::CreationError> {
+
+        let gl = &device.share.context;
+
+        if self.renderbuffer.is_none() {
+            self.renderbuffer = Some(gl.create_renderbuffer().unwrap());
+        }
+
+        let desc = conv::describe_format(config.format).unwrap();
+        gl.bind_renderbuffer(glow::RENDERBUFFER, self.renderbuffer);
+        gl.renderbuffer_storage(
+            glow::RENDERBUFFER,
+            desc.tex_internal,
+            config.extent.width as i32,
+            config.extent.height as i32,
+        );
+
+        if let Some(old) = self.swapchain.take() {
+            for fbo in old.fbos {
+                gl.delete_framebuffer(fbo);
+            }
+        }
+        let fbo = gl.create_framebuffer().unwrap();
+        self.swapchain = Some(Swapchain {
+            context: self.context.clone(),
+            extent: Extent2D {
+                width: config.extent.width,
+                height: config.extent.height,
+            },
+            fbos: iter::once(fbo).collect(),
+        });
+
         Ok(())
     }
 
@@ -149,7 +191,7 @@ impl hal::PresentationSurface<B> for Surface {
         _timeout_ns: u64,
     ) -> Result<(Self::SwapchainImage, Option<hal::window::Suboptimal>), hal::AcquireError> {
         let image = SurfaceImage {
-            view: native::ImageView::Surface(0),
+            view: native::ImageView::Renderbuffer(self.renderbuffer.unwrap()),
         };
         Ok((image, None))
     }

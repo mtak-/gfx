@@ -632,7 +632,7 @@ fn main() {
                         println!("resized to {:?}", dims);
                         #[cfg(feature = "gl")]
                         {
-                            let context = surface.get_context();
+                            let context = surface.context();
                             context.resize(dims.to_physical(window.get_hidpi_factor()));
                         }
                         recreate_swapchain = true;

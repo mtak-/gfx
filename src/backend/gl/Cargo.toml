@@ -21,6 +21,7 @@ default = []
 wgl = []
 
 [dependencies]
+arrayvec = "0.4"
 bitflags = "1"
 log = { version = "0.4" }
 gfx-hal = { path = "../../hal", version = "0.2" }
