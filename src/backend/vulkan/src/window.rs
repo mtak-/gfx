@@ -55,6 +55,20 @@ impl Surface {
     }
 }
 
+impl Drop for Surface {
+    fn drop(&mut self) {
+        if let Some(ssc) = self.swapchain.take() {
+            use ash::version::DeviceV1_0;
+            unsafe {
+                let _ = ssc.device.0.device_wait_idle();
+                ssc.device.0.destroy_fence(ssc.fence.0, None);
+                ssc.swapchain.functor.destroy_swapchain(ssc.swapchain.raw, None);
+            }
+        };
+        self.clear_stale_views();
+    }
+}
+
 pub struct RawSurface {
     pub(crate) handle: vk::SurfaceKHR,
     functor: khr::Surface,
