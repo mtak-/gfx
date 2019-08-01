@@ -41,8 +41,8 @@ use hal::{DrawCount, IndexCount, InstanceCount, VertexCount, VertexOffset, WorkG
 
 use range_alloc::RangeAllocator;
 
+use winapi::Interface as _;
 use winapi::shared::{dxgiformat, winerror};
-
 use winapi::shared::dxgi::{IDXGIAdapter, IDXGIFactory, IDXGISwapChain};
 use winapi::shared::minwindef::{FALSE, UINT};
 use winapi::shared::windef::{HWND, RECT};
@@ -150,6 +150,7 @@ impl Instance {
             wnd_handle: hwnd as *mut _,
             width: width,
             height: height,
+            presentation: None,
         }
     }
 
@@ -163,16 +164,12 @@ impl Instance {
 fn get_features(
     _device: ComPtr<d3d11::ID3D11Device>,
     _feature_level: d3dcommon::D3D_FEATURE_LEVEL,
-) -> hal::Features {
-    use hal::Features;
-
-    let features = Features::ROBUST_BUFFER_ACCESS
+) -> Features {
+    Features::ROBUST_BUFFER_ACCESS
         | Features::FULL_DRAW_INDEX_U32
         | Features::FORMAT_BC
         | Features::INSTANCE_RATE
-        | Features::SAMPLER_MIP_LOD_BIAS;
-
-    features
+        | Features::SAMPLER_MIP_LOD_BIAS
 }
 
 fn get_format_properties(
@@ -683,6 +680,12 @@ impl hal::PhysicalDevice<Backend> for PhysicalDevice {
     }
 }
 
+struct Presentation {
+    swapchain: ComPtr<IDXGISwapChain>,
+    view: ComPtr<d3d11::ID3D11RenderTargetView>,
+    format: format::Format,
+}
+
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct Surface {
@@ -691,6 +694,8 @@ pub struct Surface {
     wnd_handle: HWND,
     width: u32,
     height: u32,
+    #[derivative(Debug = "ignore")]
+    presentation: Option<Presentation>,
 }
 
 unsafe impl Send for Surface {}
@@ -699,10 +704,6 @@ unsafe impl Sync for Surface {}
 impl hal::Surface<Backend> for Surface {
     fn supports_queue_family(&self, _queue_family: &QueueFamily) -> bool {
         true
-        /*match queue_family {
-            &QueueFamily::Present => true,
-            _ => false
-        }*/
     }
 
     fn compatibility(
@@ -746,6 +747,89 @@ impl hal::Surface<Backend> for Surface {
         (capabilities, Some(formats), present_modes)
     }
 }
+
+impl hal::PresentationSurface<Backend> for Surface {
+    type SwapchainImage = ImageView;
+
+    unsafe fn configure_swapchain(
+        &mut self, device: &device::Device, config: hal::SwapchainConfig
+    ) -> Result<(), hal::window::CreationError> {
+        assert!(image::Usage::COLOR_ATTACHMENT.contains(config.image_usage));
+
+        let swapchain = match self.presentation.take() {
+            Some(present) => {
+                let non_srgb_format = conv::map_format_nosrgb(config.format).unwrap();
+                drop(present.view);
+                assert_eq!(
+                    winerror::S_OK,
+                    present.swapchain.ResizeBuffers(
+                        config.image_count,
+                        config.extent.width,
+                        config.extent.height,
+                        non_srgb_format,
+                        0,
+                    )
+                );
+                present.swapchain
+            }
+            None => {
+                let (swapchain, _) = device.create_swapchain_impl(&config, self.wnd_handle, self.factory.clone())?;
+                swapchain
+            }
+        };
+
+        let mut resource: *mut d3d11::ID3D11Resource = ptr::null_mut();
+        assert_eq!(
+            winerror::S_OK,
+            swapchain.GetBuffer(
+                0 as _,
+                &d3d11::ID3D11Resource::uuidof(),
+                &mut resource as *mut *mut _ as *mut *mut _,
+            )
+        );
+
+        let kind = image::Kind::D2(config.extent.width, config.extent.height, 1, 1);
+        let format = conv::map_format(config.format).unwrap();
+        let decomposed = conv::DecomposedDxgiFormat::from_dxgi_format(format);
+
+        let view_info = ViewInfo {
+            resource,
+            kind,
+            caps: image::ViewCapabilities::empty(),
+            view_kind: image::ViewKind::D2,
+            format: decomposed.rtv.unwrap(),
+            range: image::SubresourceRange {
+                aspects: format::Aspects::COLOR,
+                levels: 0 .. 1,
+                layers: 0 .. 1,
+            },
+        };
+        let view = device.view_image_as_render_target(&view_info).unwrap();
+
+        self.presentation = Some(Presentation {
+            swapchain,
+            view,
+            format: config.format,
+        });
+        Ok(())
+    }
+
+    unsafe fn acquire_image(
+        &mut self,
+        _timeout_ns: u64, //TODO: use the timeout
+    ) -> Result<(ImageView, Option<hal::window::Suboptimal>), hal::AcquireError> {
+        let present = self.presentation.as_ref().unwrap();
+        let image_view = ImageView {
+            format: present.format,
+            rtv_handle: Some(present.view.clone()),
+            dsv_handle: None,
+            srv_handle: None,
+            uav_handle: None,
+        };
+        Ok((image_view, None))
+    }
+}
+
 
 #[derive(Derivative)]
 #[derivative(Debug)]
@@ -853,11 +937,18 @@ impl hal::queue::RawCommandQueue<Backend> for CommandQueue {
         Iw: IntoIterator<Item = &'a S>,
     {
         for (swapchain, _idx) in swapchains {
-            unsafe {
-                swapchain.borrow().dxgi_swapchain.Present(1, 0);
-            }
+            swapchain.borrow().dxgi_swapchain.Present(1, 0);
         }
 
+        Ok(None)
+    }
+
+    unsafe fn present_surface(
+        &mut self,
+        surface: &mut Surface,
+        _image: ImageView,
+    ) -> Result<Option<hal::window::Suboptimal>, hal::window::PresentError> {
+        surface.presentation.as_ref().unwrap().swapchain.Present(1, 0);
         Ok(None)
     }
 
